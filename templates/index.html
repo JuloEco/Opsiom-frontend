@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Opsiom</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="app-shell">
+
+  <aside id="sidebar">
+    <div id="brand-row">
+      <div id="brand-mark">O</div>
+      <span id="brand-name">opsiom</span>
+    </div>
+
+    <button id="new-chat">+ Nouvelle conversation</button>
+
+    <div id="system-card">
+      <div id="status-line">
+        <span id="status-dot" class="dot dot-pending"></span>
+        <span id="status-text">Connexion...</span>
+      </div>
+      <div id="status-checkpoint"></div>
+      <div id="status-rag"></div>
+    </div>
+
+    <span class="version-tag">OPSIOM / DISTANT</span>
+  </aside>
+
+  <main id="main-panel">
+    <h1 id="topbar-title">Opsiom</h1>
+
+    <div id="conversation" aria-live="polite">
+      <div id="placeholder">
+        <h2>Une IA qui pense en français.</h2>
+        <p>Posez une question, développez une idée ou commencez par un simple bonjour.</p>
+      </div>
+    </div>
+
+    <div id="suggestions">
+      <button class="suggestion" data-prompt="Explique-moi simplement ce qu'est un réseau neuronal.">Comprendre un sujet</button>
+      <button class="suggestion" data-prompt="Aide-moi à organiser mes idées pour un projet.">Organiser une idée</button>
+      <button class="suggestion" data-prompt="Écris-moi un court texte créatif en français.">Créer quelque chose</button>
+    </div>
+
+    <div id="composer-row">
+      <textarea id="msg-input" placeholder="Écrivez votre message..." rows="1" maxlength="2000"></textarea>
+      <button id="send-btn" aria-label="Envoyer">↑</button>
+    </div>
+
+    <p class="disclaimer">Opsiom peut produire des réponses inexactes. Vérifiez les informations importantes.</p>
+  </main>
+
+</div>
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
