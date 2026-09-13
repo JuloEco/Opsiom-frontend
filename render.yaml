@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: opsiom-frontend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --timeout 120
+    envVars:
+      - key: OPSIOM_API_URL
+        value: https://juloeco-opsiom.hf.space/api
+      - key: OPSIOM_API_KEY
+        sync: false   # à saisir manuellement dans le dashboard Render, jamais en dur ici
+      - key: OPSIOM_TIMEOUT
+        value: "90"
