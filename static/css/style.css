@@ -95,7 +95,7 @@ body {
 
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
-#status-checkpoint, #status-rag { color: var(--text-dim); font-size: 12px; }
+#status-models, #status-device { color: var(--text-dim); font-size: 12px; }
 
 .version-tag {
   margin-top: auto;
@@ -112,12 +112,55 @@ body {
   min-width: 0;
 }
 
+/* Barre du haut : titre à gauche, sélecteur de modèle à droite */
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
 #topbar-title {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 600;
   font-size: 16px;
   letter-spacing: -.01em;
-  margin: 0 0 14px;
+  margin: 0;
+}
+
+/* Sélecteur de modèle (Micro / Nano / Large) */
+#model-picker {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,.035);
+}
+
+.model-btn {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.model-btn small { font-size: 11px; opacity: .75; }
+.model-btn:hover { color: var(--text); }
+.model-btn:focus-visible { outline: 2px solid var(--accent-a); outline-offset: 2px; }
+.model-btn.active {
+  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+  color: #21152a;
+  font-weight: 600;
 }
 
 #conversation {
@@ -158,11 +201,74 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
 }
-.bubble.assistant.pending { color: var(--text-dim); font-style: italic; }
 .bubble.assistant.error {
   background: rgba(226, 106, 106, .12);
   border: 1px solid rgba(226, 106, 106, .35);
   color: #f3c9c9;
+}
+
+/* Mention « Opsiom Nano · 45M · 12 s » sous chaque réponse */
+.bubble-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Animation « Opsiom réfléchit » */
+.bubble.assistant.thinking {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: normal;
+}
+
+.wave {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 20px;
+  flex: none;
+}
+.wave i {
+  display: block;
+  width: 5px;
+  height: 6px;
+  border-radius: 1px;
+  transform-origin: bottom;
+  background: linear-gradient(180deg, var(--accent-a), var(--accent-b));
+  animation: wave 1.2s ease-in-out infinite;
+}
+.wave i:nth-child(2) { animation-delay: .12s; }
+.wave i:nth-child(3) { animation-delay: .24s; }
+.wave i:nth-child(4) { animation-delay: .36s; }
+.wave i:nth-child(5) { animation-delay: .48s; }
+
+@keyframes wave {
+  0%, 60%, 100% { transform: scaleY(1); opacity: .55; }
+  30%           { transform: scaleY(3.2); opacity: 1; }
+}
+
+.think-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.think-text { color: var(--text); font-size: 14px; animation: think-fade .4s ease-out; }
+.think-meta { color: var(--text-faint); font-size: 12px; }
+
+@keyframes think-fade {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Texte lu uniquement par les lecteurs d'écran */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wave i, .think-text { animation: none; }
+  .wave i { height: 12px; opacity: .8; }
 }
 
 #suggestions {
