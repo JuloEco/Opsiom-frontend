@@ -49,13 +49,22 @@ def _normalize_api_url(raw: str) -> str:
 
 
 OPSIOM_API_URL = _normalize_api_url(
-    os.environ.get("OPSIOM_API_URL", "")
+    os.environ.get("OPSIOM_API_URL", "https://pursuable-underpaid-boss.ngrok-free.dev")
 )
 OPSIOM_API_KEY = os.environ.get("OPSIOM_API_KEY", "").strip()
 REQUEST_TIMEOUT = int(os.environ.get("OPSIOM_TIMEOUT", "120"))
 
 # Modèle utilisé si le front n'en envoie aucun (le serveur a aussi son défaut).
 DEFAULT_MODEL_ID = "small"
+
+# Noms affichés dans le sélecteur. Les ids (nano / small / large) sont ceux du
+# serveur d'inférence et ne changent pas (le CLI et /api/chat continuent de
+# fonctionner) : seul l'affichage est renommé, ici, à un seul endroit.
+MODEL_DISPLAY = {
+    "nano": {"label": "Opsiom Micro", "params": "25M"},
+    "small": {"label": "Opsiom Nano", "params": "45M"},
+    "large": {"label": "Opsiom Large", "params": "200M"},
+}
 
 # Bornes appliquées côté proxy : l'API ngrok est publique, on évite qu'un
 # client puisse demander des générations démesurées sur ton PC.
@@ -165,7 +174,10 @@ def models():
             return jsonify({"error": ngrok_msg}), 502
 
         resp.raise_for_status()
-        return jsonify(resp.json())
+        data = resp.json()
+        for m in data.get("models", []):
+            m.update(MODEL_DISPLAY.get(m.get("id"), {}))
+        return jsonify(data)
 
     except requests.exceptions.Timeout:
         return jsonify({"error": "Le serveur Opsiom ne répond pas (timeout)."}), 504
