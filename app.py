@@ -49,7 +49,7 @@ def _normalize_api_url(raw: str) -> str:
 
 
 OPSIOM_API_URL = _normalize_api_url(
-    os.environ.get("OPSIOM_API_URL", "https://pursuable-underpaid-boss.ngrok-free.dev")
+    os.environ.get("OPSIOM_API_URL", "")
 )
 OPSIOM_API_KEY = os.environ.get("OPSIOM_API_KEY", "").strip()
 REQUEST_TIMEOUT = int(os.environ.get("OPSIOM_TIMEOUT", "120"))
