@@ -29,6 +29,11 @@
       <div id="status-device"></div>
     </div>
 
+    <div id="account-row">
+      <span id="account-name">{{ username }}</span>
+      <a id="logout-link" href="{{ url_for('auth.logout') }}">Déconnexion</a>
+    </div>
+
     <span class="version-tag">OPSIOM / DISTANT</span>
   </aside>
 
