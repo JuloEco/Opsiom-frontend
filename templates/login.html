@@ -17,7 +17,9 @@
   </div>
 
   <h1 class="auth-title">Connexion</h1>
-  <p class="auth-subtitle">Connecte-toi pour accéder à ton espace de discussion.</p>
+  <p class="auth-subtitle">Connecte-toi avec ton compte Octix pour accéder à ton espace de discussion.</p>
+
+  <div class="octix-note">🔒 Connexion via <strong>Octix</strong> — même pseudo, même mot de passe sur toutes les apps de l'écosystème.</div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -31,8 +33,8 @@
 
   <form method="POST">
     <div class="field">
-      <label for="username">Pseudo ou e-mail</label>
-      <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+      <label for="username">Pseudo Octix</label>
+      <input type="text" id="username" name="username" value="{{ username or '' }}" autocomplete="username" required autofocus>
     </div>
     <div class="field">
       <label for="password">Mot de passe</label>
@@ -41,7 +43,7 @@
     <button type="submit" class="auth-submit">Se connecter</button>
   </form>
 
-  <p class="auth-switch">Pas encore de compte ? <a href="{{ url_for('auth.register') }}">Créer un compte</a></p>
+  <p class="auth-switch">Pas encore de compte ? <a href="{{ octix_portal_url }}/inscription" target="_blank" rel="noopener">Créer ton identifiant Octix ↗</a></p>
 </div>
 
 </body>
