@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Créer un compte — Opsiom</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="auth-page">
+
+<div class="auth-card">
+  <div class="auth-brand">
+    <div id="brand-mark">O</div>
+    <span id="brand-name">opsiom</span>
+  </div>
+
+  <h1 class="auth-title">Créer un compte</h1>
+  <p class="auth-subtitle">Un compte gratuit suffit pour accéder au chat.</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flash-list">
+        {% for category, message in messages %}
+          <li class="flash {{ category }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <form method="POST">
+    <div class="field">
+      <label for="username">Pseudo</label>
+      <input type="text" id="username" name="username" value="{{ username or '' }}"
+             minlength="3" maxlength="32" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="email">E-mail</label>
+      <input type="email" id="email" name="email" value="{{ email or '' }}"
+             autocomplete="email" required>
+    </div>
+    <div class="field">
+      <label for="password">Mot de passe</label>
+      <input type="password" id="password" name="password" minlength="8"
+             autocomplete="new-password" required>
+      <span class="field-hint">8 caractères minimum</span>
+    </div>
+    <div class="field">
+      <label for="confirm">Confirmer le mot de passe</label>
+      <input type="password" id="confirm" name="confirm" minlength="8"
+             autocomplete="new-password" required>
+    </div>
+    <button type="submit" class="auth-submit">Créer mon compte</button>
+  </form>
+
+  <p class="auth-switch">Déjà un compte ? <a href="{{ url_for('auth.login') }}">Se connecter</a></p>
+</div>
+
+</body>
+</html>
