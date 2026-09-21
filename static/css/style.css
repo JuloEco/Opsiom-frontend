@@ -419,8 +419,23 @@ body.auth-page {
   color: var(--text-dim);
   font-size: 14px;
   line-height: 1.5;
-  margin: 0 0 24px;
+  margin: 0 0 16px;
 }
+
+.octix-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(159, 107, 213, .08);
+  border: 1px solid rgba(159, 107, 213, .28);
+  border-radius: 10px;
+  padding: 10px 13px;
+  margin: 0 0 22px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.octix-note strong { color: var(--text); }
 
 .auth-card form {
   display: flex;
