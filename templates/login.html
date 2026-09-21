@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Connexion — Opsiom</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="auth-page">
+
+<div class="auth-card">
+  <div class="auth-brand">
+    <div id="brand-mark">O</div>
+    <span id="brand-name">opsiom</span>
+  </div>
+
+  <h1 class="auth-title">Connexion</h1>
+  <p class="auth-subtitle">Connecte-toi pour accéder à ton espace de discussion.</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flash-list">
+        {% for category, message in messages %}
+          <li class="flash {{ category }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <form method="POST">
+    <div class="field">
+      <label for="username">Pseudo ou e-mail</label>
+      <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Mot de passe</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="auth-submit">Se connecter</button>
+  </form>
+
+  <p class="auth-switch">Pas encore de compte ? <a href="{{ url_for('auth.register') }}">Créer un compte</a></p>
+</div>
+
+</body>
+</html>
