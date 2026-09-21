@@ -4,9 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Opsiom</title>
+<link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
 
@@ -14,22 +15,32 @@
 
   <aside id="sidebar">
     <div id="brand-row">
-      <div id="brand-mark">O</div>
+      <img id="brand-mark" src="{{ url_for('static', filename='img/logo.png') }}" alt="">
       <span id="brand-name">opsiom</span>
     </div>
 
-    <button id="new-chat">+ Nouvelle conversation</button>
+    <button id="new-chat">
+      <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M7.5 1.5V13.5M1.5 7.5H13.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span>Nouvelle conversation</span>
+    </button>
 
     <div id="system-card">
       <div id="status-line">
         <span id="status-dot" class="dot dot-pending"></span>
         <span id="status-text">Connexion...</span>
       </div>
-      <div id="status-models"></div>
-      <div id="status-device"></div>
+      <div class="status-detail">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="1.5" y="2.5" width="9" height="6" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M4 10.5H8M6 8.5V10.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        <span id="status-models"></span>
+      </div>
+      <div class="status-detail">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2.5" y="2.5" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.1"/><path d="M4.3 2.5V1M7.7 2.5V1M4.3 11V9.5M7.7 11V9.5M2.5 4.3H1M2.5 7.7H1M11 4.3H9.5M11 7.7H9.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        <span id="status-device"></span>
+      </div>
     </div>
 
     <div id="account-row">
+      <div class="avatar-chip">{{ (username or "?")[0]|upper }}</div>
       <span id="account-name">{{ username }}</span>
       <a id="logout-link" href="{{ url_for('auth.logout') }}">Déconnexion</a>
     </div>
@@ -51,14 +62,25 @@
     </div>
 
     <div id="suggestions">
-      <button class="suggestion" data-prompt="Explique-moi simplement ce qu'est un réseau neuronal.">Comprendre un sujet</button>
-      <button class="suggestion" data-prompt="Aide-moi à organiser mes idées pour un projet.">Organiser une idée</button>
-      <button class="suggestion" data-prompt="Écris-moi un court texte créatif en français.">Créer quelque chose</button>
+      <button class="suggestion" data-prompt="Explique-moi simplement ce qu'est un réseau neuronal.">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.1"/><path d="M6.5 4.3V6.8L8.2 8.1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        Comprendre un sujet
+      </button>
+      <button class="suggestion" data-prompt="Aide-moi à organiser mes idées pour un projet.">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 3.5H11M2 6.5H11M2 9.5H7.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        Organiser une idée
+      </button>
+      <button class="suggestion" data-prompt="Écris-moi un court texte créatif en français.">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1.5L7.7 4.9L11 6.5L7.7 8.1L6.5 11.5L5.3 8.1L2 6.5L5.3 4.9L6.5 1.5Z" stroke="currentColor" stroke-width="1"/></svg>
+        Créer quelque chose
+      </button>
     </div>
 
     <div id="composer-row">
-      <textarea id="msg-input" placeholder="Écrivez votre message..." rows="1" maxlength="2000"></textarea>
-      <button id="send-btn" aria-label="Envoyer">↑</button>
+      <textarea id="msg-input" placeholder="Écrivez à Opsiom…" rows="1" maxlength="2000"></textarea>
+      <button id="send-btn" aria-label="Envoyer">
+        <svg width="17" height="17" viewBox="0 0 17 17" fill="none"><path d="M8.5 13.5V3.5M8.5 3.5L4 8M8.5 3.5L13 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
     </div>
 
     <p class="disclaimer">Opsiom peut produire des réponses inexactes. Vérifiez les informations importantes.</p>
