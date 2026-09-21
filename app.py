@@ -29,6 +29,10 @@ import time
 
 import requests
 from flask import Flask, jsonify, render_template, request
+from flask_login import LoginManager, current_user, login_required
+
+from auth import auth_bp
+from models import User, db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +41,65 @@ logging.basicConfig(
 logger = logging.getLogger("opsiom_frontend")
 
 app = Flask(__name__)
+
+# --- Config générale ----------------------------------------------------
+app.secret_key = os.environ.get("SECRET_KEY", "")
+if not app.secret_key:
+    logger.warning(
+        "SECRET_KEY n'est pas défini : une clé aléatoire temporaire est utilisée, "
+        "ce qui déconnecte tout le monde à chaque redémarrage. Définis SECRET_KEY "
+        "en production."
+    )
+    import secrets as _secrets
+    app.secret_key = _secrets.token_hex(32)
+
+# --- Base de données ------------------------------------------------
+# SQLite par défaut (fichier dans instance/), ou une vraie base via DATABASE_URL
+# (ex. Postgres sur Render — le disque de Render "free" est éphémère, donc
+# SQLite n'y survit pas à un redéploiement).
+os.makedirs(app.instance_path, exist_ok=True)
+default_db_uri = "sqlite:///" + os.path.join(app.instance_path, "opsiom.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", default_db_uri)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db.init_app(app)
+
+with app.app_context():
+    db.create_all()
+
+# --- Authentification ------------------------------------------------
+login_manager = LoginManager()
+login_manager.login_view = "auth.login"
+login_manager.login_message = "Connecte-toi pour accéder à Opsiom."
+login_manager.login_message_category = "info"
+login_manager.init_app(app)
+app.register_blueprint(auth_bp)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    # Les routes /status, /models et /chat sont appelées en fetch() par le
+    # JS : une redirection HTML les ferait échouer silencieusement (JSON
+    # attendu). On renvoie donc du JSON pour ces routes, une redirection
+    # classique pour la navigation normale (GET /).
+    from flask import redirect, url_for
+    if request.path in ("/status", "/models", "/chat"):
+        return jsonify({"error": "Session expirée, reconnecte-toi.", "auth_required": True}), 401
+    return redirect(url_for("auth.login", next=request.path))
+
+
+# --- Quota gratuit ----------------------------------------------------
+# Nombre de messages qu'un compte peut envoyer par jour avant d'être bloqué.
+FREE_DAILY_QUOTA = int(os.environ.get("FREE_DAILY_QUOTA", "20"))
+
+
+@app.context_processor
+def inject_free_quota():
+    return {"free_daily_quota": FREE_DAILY_QUOTA}
 
 
 def _normalize_api_url(raw: str) -> str:
@@ -107,11 +170,13 @@ def _ngrok_error(resp) -> str | None:
 
 
 @app.get("/")
+@login_required
 def index():
-    return render_template("index.html")
+    return render_template("index.html", quota=current_user.quota_status(FREE_DAILY_QUOTA))
 
 
 @app.get("/status")
+@login_required
 def status():
     """Interroge GET {OPSIOM_API_URL}/health pour afficher un vrai statut
     dans la sidebar (pas un badge 'En ligne' codé en dur côté front).
@@ -125,7 +190,7 @@ def status():
 
         resp.raise_for_status()
         data = resp.json()
-        return jsonify({"online": True, **data})
+        return jsonify({"online": True, "quota": current_user.quota_status(FREE_DAILY_QUOTA), **data})
 
     except requests.exceptions.Timeout:
         logger.warning("Timeout sur /health — le PC est peut-être occupé par une génération.")
@@ -162,6 +227,7 @@ def status():
 
 
 @app.get("/models")
+@login_required
 def models():
     """Proxy vers GET {OPSIOM_API_URL}/models.
     Réponse du serveur : {"models": [{"id","label","params"}, ...], "default": "small"}
@@ -201,8 +267,21 @@ def models():
 
 
 @app.post("/chat")
+@login_required
 def chat():
-    """Proxy vers POST {OPSIOM_API_URL}/chat."""
+    """Proxy vers POST {OPSIOM_API_URL}/chat.
+
+    Chaque compte a droit à FREE_DAILY_QUOTA messages par jour. Le quota est
+    vérifié avant d'appeler l'API distante (pour ne rien consommer côté PC
+    inutilement) et décompté seulement si la réponse revient avec succès —
+    un message qui échoue (timeout, PC éteint...) n'est jamais compté."""
+    if not current_user.can_send_message(FREE_DAILY_QUOTA):
+        quota = current_user.quota_status(FREE_DAILY_QUOTA)
+        return jsonify({
+            "error": f"Quota gratuit atteint ({quota['limit']} messages/jour). Réessaie demain.",
+            "quota": quota,
+        }), 429
+
     payload = request.get_json(silent=True) or {}
     message = (payload.get("message") or "").strip()
 
@@ -238,9 +317,12 @@ def chat():
         resp.raise_for_status()
         data = resp.json()
         logger.info(f"Réponse Opsiom ({model_id}) obtenue en {time.time() - t0:.1f}s")
+
+        current_user.register_message_sent()
         return jsonify({
             "response": data.get("response", ""),
             "model": data.get("model", model_id),
+            "quota": current_user.quota_status(FREE_DAILY_QUOTA),
         })
 
     except requests.exceptions.Timeout:
