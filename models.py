@@ -7,18 +7,18 @@ seul au changement de date, pas besoin de tâche planifiée.
 """
 from datetime import date, datetime
 
-from flask_login import UserMixin
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
 
 
-class User(UserMixin, db.Model):
+class User(db.Model):
     """Ombre locale d'un compte Octix, utilisée uniquement pour le quota.
 
     Aucun mot de passe n'est stocké ici : l'authentification est déléguée à
-    Octix (voir auth.py). Cette table associe juste un pseudo Octix à un
-    compteur de messages/jour.
+    Octix (voir auth.py, même méthode que LearnCode/Omnia — session Flask
+    simple, pas de Flask-Login). Cette table associe juste un pseudo Octix à
+    un compteur de messages/jour.
     """
     __tablename__ = "users"
 
