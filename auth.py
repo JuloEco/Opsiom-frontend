@@ -1,125 +1,113 @@
 """
 Authentification Opsiom -- deleguee a Octix.
 
-Opsiom ne cree JAMAIS de compte lui-meme : la creation de compte se fait
-uniquement sur le portail Octix (Octix_NEW_ACCOUNT_V2, /inscription).
-Ce module se contente de :
-  1. Verifier les identifiants aupres de l'API Octix (POST {OCTIX_URL}/login),
-     exactement comme le fait compte_routes.py du portail Octix.
-  2. Recuperer le profil (GET {OCTIX_URL}/account/me) pour connaitre l'e-mail.
-  3. Maintenir une "ombre" locale (table users, cf. models.py) qui sert
-     uniquement a suivre le quota de messages gratuits par compte -- aucun
-     mot de passe n'y est jamais stocke.
+Meme methode que les autres apps de l'ecosysteme (LearnCode/Omnia) :
+une session Flask "brute" (pas de Flask-Login, pas de mot de passe stocke
+localement). Opsiom ne cree JAMAIS de compte lui-meme : la creation de
+compte se fait uniquement sur le portail Octix (Octix_NEW_ACCOUNT_V2,
+/inscription).
+
+Ce module :
+  1. Verifie les identifiants aupres de l'API Octix (POST {OCTIX_URL}/login),
+     exactement comme octix_login() dans LearnCode.
+  2. Stocke le pseudo et le token recus dans session["user"] /
+     session["octix_token"].
+  3. Fournit login_required, un decorateur qui bloque l'acces si
+     session["user"] est absent (redirection HTML, ou JSON pour les routes
+     appelees en fetch() par le JS : /status, /models, /chat).
+  4. Maintient une "ombre" locale (table users, cf. models.py) qui sert
+     uniquement a suivre le quota de messages gratuits par compte.
 
 Variables d'environnement :
   OCTIX_URL         - URL de l'API Octix (le meme backend que celui utilise
-                       par le portail Octix), ex: https://octix-api.exemple.com
+                       par le portail Octix et par LearnCode).
   OCTIX_PORTAL_URL  - URL publique du portail Octix (Octix_NEW_ACCOUNT_V2),
-                       utilisee pour rediriger "Creer un compte" et
-                       "Mot de passe oublie" vers /inscription et
-                       /mot-de-passe-oublie.
-
-Routes exposees (endpoints "auth.login", "auth.register", "auth.logout") :
-  GET/POST /login     -> connexion via l'API Octix
-  GET      /register  -> redirige vers {OCTIX_PORTAL_URL}/inscription
-  GET      /logout    -> deconnexion locale (ne touche pas a la session Octix)
+                       utilisee pour le lien "Creer un compte" (/inscription).
 """
 import os
+from functools import wraps
 
 import requests
-from flask import Blueprint, flash, redirect, render_template, request, url_for
-from flask_login import current_user, login_required, login_user, logout_user
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
 
 from models import User, db
 
 auth_bp = Blueprint("auth", __name__)
 
-OCTIX_URL = os.environ.get("OCTIX_URL", "http://localhost:5050").rstrip("/")
-OCTIX_PORTAL_URL = os.environ.get("OCTIX_PORTAL_URL", "http://localhost:5051").rstrip("/")
+OCTIX_URL = os.environ.get("OCTIX_URL", "http://localhost:5050")
+OCTIX_PORTAL_URL = os.environ.get("OCTIX_PORTAL_URL", "http://localhost:5051")
+
+# Routes appelees en fetch() par le JS : une redirection HTML les ferait
+# echouer silencieusement (JSON attendu), donc elles recoivent du JSON 401
+# plutot qu'une redirection classique quand la session est absente/expiree.
+_JSON_ROUTES = ("/status", "/models", "/chat")
 
 
-def _json_or_empty(response):
+def octix_login(username, password):
+    """Verifie les identifiants aupres d'Octix. Retourne (ok, token_ou_message)."""
     try:
-        return response.json() if response.content else {}
-    except ValueError:
-        return {}
-
-
-def _octix_login(username, password):
-    """POST {OCTIX_URL}/login -- identique a compte_routes.py du portail Octix.
-    Renvoie (True, {"token": ..., "username": ...}) ou (False, "message d'erreur")."""
-    try:
-        response = requests.post(
-            f"{OCTIX_URL}/login",
-            json={"username": username, "password": password},
-            timeout=8,
-        )
-        data = _json_or_empty(response)
-        if response.status_code == 200:
-            return True, data
-        return False, data.get("error", "Pseudo ou mot de passe incorrect.")
-    except requests.exceptions.Timeout:
-        return False, "Octix met trop de temps à répondre. Réessaie dans un instant."
+        r = requests.post(f"{OCTIX_URL}/login", json={"username": username, "password": password}, timeout=5)
+        if r.status_code == 200:
+            return True, r.json()["token"]
+        return False, "Pseudo ou mot de passe incorrect."
     except requests.exceptions.RequestException:
-        return False, "Octix est injoignable pour le moment. Réessaie dans un instant."
+        return False, "Le service Octix est injoignable. Réessaie plus tard."
 
 
-def _octix_profile(token):
-    """GET {OCTIX_URL}/account/me avec le token recu au login -- pour recuperer
-    l'e-mail (facultatif, purement informatif cote Opsiom)."""
-    try:
-        response = requests.get(
-            f"{OCTIX_URL}/account/me",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=5,
-        )
-        if response.status_code == 200:
-            return _json_or_empty(response)
-    except requests.exceptions.RequestException:
-        pass
-    return {}
+def login_required(view_func):
+    """Bloque l'acces si personne n'est connecte (session["user"] absent)."""
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if "user" not in session:
+            if request.path in _JSON_ROUTES:
+                return jsonify({"error": "Session expirée, reconnecte-toi.", "auth_required": True}), 401
+            return redirect(url_for("auth.login", next=request.path))
+        return view_func(*args, **kwargs)
+    return wrapped
 
 
-def _sync_local_user(username, email=None):
-    """Cree ou met a jour l'ombre locale (quota) associee a ce compte Octix.
-    Ne stocke jamais de mot de passe : l'authentification reste entierement
-    du ressort d'Octix."""
+def current_username():
+    """Pseudo Octix de la personne connectee, ou None."""
+    return session.get("user")
+
+
+def current_user_record():
+    """Renvoie (en la creant si besoin) l'ombre locale de quota associee au
+    compte actuellement en session. None si personne n'est connecte."""
+    username = session.get("user")
+    if not username:
+        return None
     user = User.query.filter_by(username=username).first()
     if user is None:
-        user = User(username=username, email=email or f"{username}@octix.local")
+        user = User(username=username)
         db.session.add(user)
-    elif email and user.email != email:
-        user.email = email
-    db.session.commit()
+        db.session.commit()
     return user
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
-    if current_user.is_authenticated:
+    if "user" in session:
         return redirect(url_for("index"))
 
     if request.method == "GET":
-        return render_template("login.html")
+        return render_template("login.html", octix_portal_url=OCTIX_PORTAL_URL)
 
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
 
     if not username or not password:
         flash("Entre ton pseudo Octix et ton mot de passe.", "error")
-        return render_template("login.html", username=username), 400
+        return render_template("login.html", username=username, octix_portal_url=OCTIX_PORTAL_URL), 400
 
-    ok, result = _octix_login(username, password)
+    ok, result = octix_login(username, password)
     if not ok:
         flash(result, "error")
-        return render_template("login.html", username=username), 401
+        return render_template("login.html", username=username, octix_portal_url=OCTIX_PORTAL_URL), 401
 
-    token = result.get("token")
-    octix_username = result.get("username", username)
-    profile = _octix_profile(token) if token else {}
-
-    user = _sync_local_user(octix_username, profile.get("email"))
-    login_user(user, remember=True)
+    session["user"] = username
+    session["octix_token"] = result
+    current_user_record()  # crée la ligne de quota locale si c'est une première connexion
 
     next_url = request.args.get("next")
     # Evite les redirections externes (open redirect) : uniquement des
@@ -137,8 +125,6 @@ def register():
 
 
 @auth_bp.get("/logout")
-@login_required
 def logout():
-    logout_user()
-    flash("Tu as été déconnecté.", "info")
+    session.clear()
     return redirect(url_for("auth.login"))
