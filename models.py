@@ -9,30 +9,27 @@ from datetime import date, datetime
 
 from flask_login import UserMixin
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import check_password_hash, generate_password_hash
 
 db = SQLAlchemy()
 
 
 class User(UserMixin, db.Model):
+    """Ombre locale d'un compte Octix, utilisée uniquement pour le quota.
+
+    Aucun mot de passe n'est stocké ici : l'authentification est déléguée à
+    Octix (voir auth.py). Cette table associe juste un pseudo Octix à un
+    compteur de messages/jour.
+    """
     __tablename__ = "users"
 
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(32), unique=True, nullable=False, index=True)
-    email = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     # --- Quota gratuit ---------------------------------------------------
     messages_used_today = db.Column(db.Integer, default=0, nullable=False)
     quota_date = db.Column(db.Date, default=date.today, nullable=False)
-
-    # --- Mot de passe ------------------------------------------------------
-    def set_password(self, raw_password):
-        self.password_hash = generate_password_hash(raw_password)
-
-    def check_password(self, raw_password):
-        return check_password_hash(self.password_hash, raw_password)
 
     # --- Quota ---------------------------------------------------------
     def _reset_quota_if_needed(self):

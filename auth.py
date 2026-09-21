@@ -1,17 +1,32 @@
 """
-Blueprint d'authentification pour Opsiom -- inscription / connexion / deconnexion.
+Authentification Opsiom -- deleguee a Octix.
 
-Compte 100% local a cette app (stocke dans la base definie par DATABASE_URL,
-cf. models.py) : ce n'est pas Octix, juste un login simple protegeant l'acces
-au chat et au quota gratuit.
+Opsiom ne cree JAMAIS de compte lui-meme : la creation de compte se fait
+uniquement sur le portail Octix (Octix_NEW_ACCOUNT_V2, /inscription).
+Ce module se contente de :
+  1. Verifier les identifiants aupres de l'API Octix (POST {OCTIX_URL}/login),
+     exactement comme le fait compte_routes.py du portail Octix.
+  2. Recuperer le profil (GET {OCTIX_URL}/account/me) pour connaitre l'e-mail.
+  3. Maintenir une "ombre" locale (table users, cf. models.py) qui sert
+     uniquement a suivre le quota de messages gratuits par compte -- aucun
+     mot de passe n'y est jamais stocke.
+
+Variables d'environnement :
+  OCTIX_URL         - URL de l'API Octix (le meme backend que celui utilise
+                       par le portail Octix), ex: https://octix-api.exemple.com
+  OCTIX_PORTAL_URL  - URL publique du portail Octix (Octix_NEW_ACCOUNT_V2),
+                       utilisee pour rediriger "Creer un compte" et
+                       "Mot de passe oublie" vers /inscription et
+                       /mot-de-passe-oublie.
 
 Routes exposees (endpoints "auth.login", "auth.register", "auth.logout") :
-  GET/POST /login     -> connexion (pseudo ou e-mail + mot de passe)
-  GET/POST /register  -> creation de compte
-  GET      /logout    -> deconnexion
+  GET/POST /login     -> connexion via l'API Octix
+  GET      /register  -> redirige vers {OCTIX_PORTAL_URL}/inscription
+  GET      /logout    -> deconnexion locale (ne touche pas a la session Octix)
 """
-import re
+import os
 
+import requests
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
@@ -19,7 +34,64 @@ from models import User, db
 
 auth_bp = Blueprint("auth", __name__)
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+OCTIX_URL = os.environ.get("OCTIX_URL", "http://localhost:5050").rstrip("/")
+OCTIX_PORTAL_URL = os.environ.get("OCTIX_PORTAL_URL", "http://localhost:5051").rstrip("/")
+
+
+def _json_or_empty(response):
+    try:
+        return response.json() if response.content else {}
+    except ValueError:
+        return {}
+
+
+def _octix_login(username, password):
+    """POST {OCTIX_URL}/login -- identique a compte_routes.py du portail Octix.
+    Renvoie (True, {"token": ..., "username": ...}) ou (False, "message d'erreur")."""
+    try:
+        response = requests.post(
+            f"{OCTIX_URL}/login",
+            json={"username": username, "password": password},
+            timeout=8,
+        )
+        data = _json_or_empty(response)
+        if response.status_code == 200:
+            return True, data
+        return False, data.get("error", "Pseudo ou mot de passe incorrect.")
+    except requests.exceptions.Timeout:
+        return False, "Octix met trop de temps à répondre. Réessaie dans un instant."
+    except requests.exceptions.RequestException:
+        return False, "Octix est injoignable pour le moment. Réessaie dans un instant."
+
+
+def _octix_profile(token):
+    """GET {OCTIX_URL}/account/me avec le token recu au login -- pour recuperer
+    l'e-mail (facultatif, purement informatif cote Opsiom)."""
+    try:
+        response = requests.get(
+            f"{OCTIX_URL}/account/me",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if response.status_code == 200:
+            return _json_or_empty(response)
+    except requests.exceptions.RequestException:
+        pass
+    return {}
+
+
+def _sync_local_user(username, email=None):
+    """Cree ou met a jour l'ombre locale (quota) associee a ce compte Octix.
+    Ne stocke jamais de mot de passe : l'authentification reste entierement
+    du ressort d'Octix."""
+    user = User.query.filter_by(username=username).first()
+    if user is None:
+        user = User(username=username, email=email or f"{username}@octix.local")
+        db.session.add(user)
+    elif email and user.email != email:
+        user.email = email
+    db.session.commit()
+    return user
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -30,81 +102,43 @@ def login():
     if request.method == "GET":
         return render_template("login.html")
 
-    identifier = (request.form.get("username") or "").strip()
+    username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
 
-    if not identifier or not password:
-        flash("Renseigne ton pseudo (ou e-mail) et ton mot de passe.", "error")
-        return render_template("login.html", username=identifier), 400
+    if not username or not password:
+        flash("Entre ton pseudo Octix et ton mot de passe.", "error")
+        return render_template("login.html", username=username), 400
 
-    user = User.query.filter(
-        (User.username == identifier) | (User.email == identifier.lower())
-    ).first()
+    ok, result = _octix_login(username, password)
+    if not ok:
+        flash(result, "error")
+        return render_template("login.html", username=username), 401
 
-    if user is None or not user.check_password(password):
-        flash("Identifiants incorrects.", "error")
-        return render_template("login.html", username=identifier), 401
+    token = result.get("token")
+    octix_username = result.get("username", username)
+    profile = _octix_profile(token) if token else {}
 
+    user = _sync_local_user(octix_username, profile.get("email"))
     login_user(user, remember=True)
+
     next_url = request.args.get("next")
-    # Evite les redirections externes (open redirect) : on n'accepte que les
+    # Evite les redirections externes (open redirect) : uniquement des
     # chemins internes qui commencent par "/".
     if not next_url or not next_url.startswith("/"):
         next_url = url_for("index")
     return redirect(next_url)
 
 
-@auth_bp.route("/register", methods=["GET", "POST"])
+@auth_bp.get("/register")
 def register():
-    if current_user.is_authenticated:
-        return redirect(url_for("index"))
-
-    if request.method == "GET":
-        return render_template("register.html")
-
-    username = (request.form.get("username") or "").strip()
-    email = (request.form.get("email") or "").strip().lower()
-    password = request.form.get("password") or ""
-    confirm = request.form.get("confirm") or ""
-
-    form_values = {"username": username, "email": email}
-
-    if not (3 <= len(username) <= 32):
-        flash("Le pseudo doit faire entre 3 et 32 caracteres.", "error")
-        return render_template("register.html", **form_values), 400
-
-    if not EMAIL_RE.match(email):
-        flash("Adresse e-mail invalide.", "error")
-        return render_template("register.html", **form_values), 400
-
-    if len(password) < 8:
-        flash("Le mot de passe doit faire au moins 8 caracteres.", "error")
-        return render_template("register.html", **form_values), 400
-
-    if password != confirm:
-        flash("Les deux mots de passe ne correspondent pas.", "error")
-        return render_template("register.html", **form_values), 400
-
-    if User.query.filter_by(username=username).first():
-        flash("Ce pseudo est deja pris.", "error")
-        return render_template("register.html", **form_values), 409
-
-    if User.query.filter_by(email=email).first():
-        flash("Un compte existe deja avec cet e-mail.", "error")
-        return render_template("register.html", **form_values), 409
-
-    user = User(username=username, email=email)
-    user.set_password(password)
-    db.session.add(user)
-    db.session.commit()
-
-    login_user(user, remember=True)
-    return redirect(url_for("index"))
+    """Opsiom ne cree pas de compte : on renvoie vers le portail Octix,
+    seul point de creation de compte de tout l'ecosysteme."""
+    return redirect(f"{OCTIX_PORTAL_URL}/inscription")
 
 
 @auth_bp.get("/logout")
 @login_required
 def logout():
     logout_user()
-    flash("Tu as ete deconnecte.", "info")
+    flash("Tu as été déconnecté.", "info")
     return redirect(url_for("auth.login"))
