@@ -29,10 +29,9 @@ import time
 
 import requests
 from flask import Flask, jsonify, render_template, request
-from flask_login import LoginManager, current_user, login_required
 
-from auth import auth_bp
-from models import User, db
+from auth import auth_bp, current_user_record, current_username, login_required
+from models import db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,29 +66,9 @@ with app.app_context():
     db.create_all()
 
 # --- Authentification ------------------------------------------------
-login_manager = LoginManager()
-login_manager.login_view = "auth.login"
-login_manager.login_message = "Connecte-toi pour accéder à Opsiom."
-login_manager.login_message_category = "info"
-login_manager.init_app(app)
+# Déléguée à Octix, via une session Flask simple (même méthode que
+# LearnCode/Omnia) : voir auth.py pour login_required, octix_login, etc.
 app.register_blueprint(auth_bp)
-
-
-@login_manager.user_loader
-def load_user(user_id):
-    return db.session.get(User, int(user_id))
-
-
-@login_manager.unauthorized_handler
-def unauthorized():
-    # Les routes /status, /models et /chat sont appelées en fetch() par le
-    # JS : une redirection HTML les ferait échouer silencieusement (JSON
-    # attendu). On renvoie donc du JSON pour ces routes, une redirection
-    # classique pour la navigation normale (GET /).
-    from flask import redirect, url_for
-    if request.path in ("/status", "/models", "/chat"):
-        return jsonify({"error": "Session expirée, reconnecte-toi.", "auth_required": True}), 401
-    return redirect(url_for("auth.login", next=request.path))
 
 
 # --- Quota gratuit ----------------------------------------------------
@@ -172,7 +151,12 @@ def _ngrok_error(resp) -> str | None:
 @app.get("/")
 @login_required
 def index():
-    return render_template("index.html", quota=current_user.quota_status(FREE_DAILY_QUOTA))
+    user = current_user_record()
+    return render_template(
+        "index.html",
+        username=current_username(),
+        quota=user.quota_status(FREE_DAILY_QUOTA),
+    )
 
 
 @app.get("/status")
@@ -190,7 +174,8 @@ def status():
 
         resp.raise_for_status()
         data = resp.json()
-        return jsonify({"online": True, "quota": current_user.quota_status(FREE_DAILY_QUOTA), **data})
+        quota = current_user_record().quota_status(FREE_DAILY_QUOTA)
+        return jsonify({"online": True, "quota": quota, **data})
 
     except requests.exceptions.Timeout:
         logger.warning("Timeout sur /health — le PC est peut-être occupé par une génération.")
@@ -275,8 +260,9 @@ def chat():
     vérifié avant d'appeler l'API distante (pour ne rien consommer côté PC
     inutilement) et décompté seulement si la réponse revient avec succès —
     un message qui échoue (timeout, PC éteint...) n'est jamais compté."""
-    if not current_user.can_send_message(FREE_DAILY_QUOTA):
-        quota = current_user.quota_status(FREE_DAILY_QUOTA)
+    user = current_user_record()
+    if not user.can_send_message(FREE_DAILY_QUOTA):
+        quota = user.quota_status(FREE_DAILY_QUOTA)
         return jsonify({
             "error": f"Quota gratuit atteint ({quota['limit']} messages/jour). Réessaie demain.",
             "quota": quota,
@@ -318,11 +304,11 @@ def chat():
         data = resp.json()
         logger.info(f"Réponse Opsiom ({model_id}) obtenue en {time.time() - t0:.1f}s")
 
-        current_user.register_message_sent()
+        user.register_message_sent()
         return jsonify({
             "response": data.get("response", ""),
             "model": data.get("model", model_id),
-            "quota": current_user.quota_status(FREE_DAILY_QUOTA),
+            "quota": user.quota_status(FREE_DAILY_QUOTA),
         })
 
     except requests.exceptions.Timeout:
