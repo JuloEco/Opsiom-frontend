@@ -13,10 +13,15 @@
 
 <div class="app-shell">
 
+  <div id="sidebar-backdrop"></div>
+
   <aside id="sidebar">
     <div id="brand-row">
       <img id="brand-mark" src="{{ url_for('static', filename='img/logo.png') }}" alt="">
       <span id="brand-name">opsiom</span>
+      <button id="sidebar-close" aria-label="Fermer le menu" type="button">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
     </div>
 
     <button id="new-chat">
@@ -39,15 +44,18 @@
       </div>
     </div>
 
-    <div id="quota-card" data-used="{{ quota.used }}" data-limit="{{ quota.limit }}">
+    <button id="quota-card" type="button" data-used="{{ quota.used }}" data-limit="{{ quota.limit }}" aria-haspopup="dialog">
       <div id="quota-row">
-        <span id="quota-label">Tokens aujourd'hui</span>
+        <span id="quota-label">
+          Tokens aujourd'hui
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.1"/><path d="M6 5.4V9M6 3.6V3.55" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+        </span>
         <span id="quota-count"><span id="quota-used">{{ quota.used }}</span>/<span id="quota-limit">{{ quota.limit }}</span></span>
       </div>
       <div id="quota-bar-track">
         <div id="quota-bar-fill" style="width: {{ ((quota.used / quota.limit * 100) if quota.limit else 0)|round(1) }}%;"></div>
       </div>
-    </div>
+    </button>
 
     <div id="cli-promo">
       <div id="cli-promo-head">
@@ -77,7 +85,12 @@
 
   <main id="main-panel">
     <div id="topbar">
-      <h1 id="topbar-title">Opsiom</h1>
+      <div id="topbar-left">
+        <button id="sidebar-open" aria-label="Ouvrir le menu" type="button">
+          <svg width="17" height="17" viewBox="0 0 17 17" fill="none"><path d="M2.5 5H14.5M2.5 8.5H14.5M2.5 12H14.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+        <h1 id="topbar-title">Opsiom</h1>
+      </div>
       <div id="topbar-controls">
         <div id="model-picker" role="radiogroup" aria-label="Choix du modèle"></div>
         <div id="settings-wrap">
@@ -137,7 +150,10 @@
       </button>
     </div>
 
-    <div id="quota-banner" class="flash error" hidden>Quota gratuit atteint pour aujourd'hui. Réessaie demain.</div>
+    <div id="quota-banner" class="flash error" hidden>
+      <span>Quota gratuit atteint pour aujourd'hui. Réessaie demain.</span>
+      <button id="quota-banner-info" type="button">En savoir plus</button>
+    </div>
 
     <div id="composer-row">
       <textarea id="msg-input" placeholder="Écrivez à Opsiom…" rows="1" maxlength="2000"></textarea>
@@ -149,6 +165,48 @@
     <p class="disclaimer">Opsiom peut produire des réponses inexactes. Vérifiez les informations importantes.</p>
   </main>
 
+</div>
+
+<div id="quota-modal-overlay" hidden>
+  <div id="quota-modal" role="dialog" aria-modal="true" aria-labelledby="quota-modal-title">
+    <button id="quota-modal-close" type="button" aria-label="Fermer">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 2L12 12M12 2L2 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+
+    <div id="quota-modal-icon">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 6.2V10.4L12.8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
+    </div>
+
+    <h3 id="quota-modal-title">Quota quotidien de tokens</h3>
+    <p id="quota-modal-lead">Chaque compte dispose d'un nombre de tokens gratuits par jour, partagé entre cette interface et le CLI Opsiom.</p>
+
+    <div id="quota-modal-stats">
+      <div class="quota-modal-stat">
+        <span>Utilisés</span>
+        <strong id="modal-quota-used">0</strong>
+      </div>
+      <div class="quota-modal-stat">
+        <span>Restants</span>
+        <strong id="modal-quota-remaining">0</strong>
+      </div>
+      <div class="quota-modal-stat">
+        <span>Limite / jour</span>
+        <strong id="modal-quota-limit">0</strong>
+      </div>
+    </div>
+
+    <div id="quota-modal-bar-track">
+      <div id="quota-modal-bar-fill"></div>
+    </div>
+
+    <ul id="quota-modal-list">
+      <li>Le compteur se réinitialise chaque jour à minuit.</li>
+      <li>Un même quota est partagé entre le site et <code>opsiom-cli</code> — inutile de basculer entre les deux pour en avoir plus.</li>
+      <li>Chaque message consomme des tokens à hauteur du texte envoyé et reçu, selon le modèle choisi.</li>
+    </ul>
+
+    <a id="quota-modal-cta" href="{{ octix_portal_url or '#' }}/compte" target="_blank" rel="noopener">Gérer mon compte Octix →</a>
+  </div>
 </div>
 
 <script src="{{ url_for('static', filename='js/app.js') }}"></script>
