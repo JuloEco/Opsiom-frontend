@@ -11,12 +11,25 @@ ngrok : tout passe par ce proxy, pour trois raisons :
      lente sur CPU, etc.) à un seul endroit.
 
 Routes exposées au navigateur :
-  GET  /          -> templates/index.html
+  GET  /             -> templates/index.html
+  GET  /progression  -> templates/progression.html (missions & forfaits)
+  GET  /api/progression -> version JSON de /progression
   GET  /status    -> proxy de GET  {API}/health
   GET  /models    -> proxy de GET  {API}/models   (pour construire le sélecteur)
   POST /chat      -> proxy de POST {API}/chat     (accepte "message" + "model")
 
+Forfaits (voir plans.py) :
+  Le quota de tokens/jour, les modèles autorisés et les missions à
+  accomplir pour débloquer Plus/Pro sont centralisés dans plans.py. La
+  progression est calculée par progression.py, qui lit en lecture seule
+  les bases de LearnCode/Classroom/Omnia Mind si les variables
+  LEARNCODE_DATABASE_URL / CLASSROOM_DATABASE_URL / OMNIAMIND_DATABASE_URL
+  sont configurées (aucune n'est obligatoire : sans elles, les missions
+  correspondantes restent simplement à 0/N).
+
 Variables d'environnement :
+  OPSIOM_DATABASE_URL - base locale Opsiom (forfait/quota/progression),
+                       défaut: sqlite:///opsiom_local.db.
   OPSIOM_API_URL     - URL du tunnel ngrok, avec ou sans le suffixe "/api"
                        (défaut: https://pursuable-underpaid-boss.ngrok-free.dev)
   OPSIOM_API_KEY     - ancien secret partagé, gardé en repli seulement si
@@ -52,6 +65,9 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request, session, stream_with_context
 
 from auth import OCTIX_PORTAL_URL, OCTIX_URL, auth_bp, current_username, login_required
+import plans
+from models import db, get_or_create_user
+from progression import refresh_user_progression
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,11 +93,29 @@ if not app.secret_key:
 # LearnCode/Omnia) : voir auth.py pour login_required, octix_login, etc.
 app.register_blueprint(auth_bp)
 
+# --- Base locale : forfaits, quota par forfait, progression -------------
+# Octix ne connaît pas la notion de forfait (voir plans.py) : c'est donc ici,
+# dans la base locale à Opsiom, que vit le compteur qui FAIT FOI pour le web.
+# Octix reste appelé en best-effort (fetch_quota_status/consume_quota) pour
+# que le CLI garde un ordre de grandeur cohérent, mais ne bloque plus rien :
+# tant qu'Octix n'a pas lui-même la notion de forfait, un compte Plus/Pro
+# dont le quota dépasserait la limite fixe d'Octix serait sinon bloqué à
+# tort côté CLI. À synchroniser côté Octix quand ce sera possible.
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("OPSIOM_DATABASE_URL", "sqlite:///opsiom_local.db")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db.init_app(app)
+with app.app_context():
+    db.create_all()
 
-# --- Quota gratuit — PARTAGÉ par compte, décompté côté Octix -----------
-# Valeur affichée par défaut si Octix est injoignable ; le compteur qui
-# fait réellement foi (celui qu'on incrémente/vérifie) vit dans Octix,
-# voir fetch_quota_status() / consume_quota() ci-dessous.
+
+def current_user():
+    """Ombre locale (forfait + quota) du compte Octix connecté. Suppose
+    @login_required déjà passé (current_username() non None)."""
+    return get_or_create_user(current_username())
+
+
+# Conservée uniquement comme valeur d'affichage par défaut si Octix est
+# injoignable pour le décompte "best-effort" décrit ci-dessus.
 DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "500"))
 
 
@@ -225,12 +259,65 @@ def _ngrok_error(resp) -> str | None:
 @app.get("/")
 @login_required
 def index():
+    user = current_user()
+    progress = refresh_user_progression(user)
     return render_template(
         "index.html",
         username=current_username(),
-        quota=fetch_quota_status(),
+        quota=user.quota_status(),
+        plan=plans.plan_config(user.plan),
+        plan_id=user.plan,
+        lab=user.lab,
+        next_plan=plans.plan_config(progress["next_plan"]) if progress["next_plan"] else None,
         octix_portal_url=OCTIX_PORTAL_URL,
     )
+
+
+@app.get("/progression")
+@login_required
+def progression_page():
+    user = current_user()
+    progress = refresh_user_progression(user)
+    plans_view = []
+    for plan_id in plans.PLAN_ORDER[1:]:
+        missions = plans.evaluate_missions(plan_id, progress["raw_stats"])
+        plans_view.append({
+            "id": plan_id,
+            "config": plans.plan_config(plan_id),
+            "missions": missions,
+            "done_count": sum(1 for m in missions if m["done"]),
+            "total_count": len(missions),
+            "unlocked": plans.plan_rank(user.plan) >= plans.plan_rank(plan_id),
+        })
+    return render_template(
+        "progression.html",
+        username=current_username(),
+        plan_id=user.plan,
+        current_plan=plans.plan_config(user.plan),
+        plans_view=plans_view,
+        lab=user.lab,
+        lab_label=plans.LAB_LABEL,
+        lab_emoji=plans.LAB_EMOJI,
+        lab_description=plans.LAB_DESCRIPTION,
+        octix_portal_url=OCTIX_PORTAL_URL,
+    )
+
+
+@app.get("/api/progression")
+@login_required
+def api_progression():
+    """Version JSON de /progression, utilisée pour un rafraîchissement sans
+    recharger la page (bouton 'Actualiser ma progression')."""
+    user = current_user()
+    force = request.args.get("force") == "1"
+    progress = refresh_user_progression(user, force=force)
+    return jsonify({
+        "plan": user.plan,
+        "upgraded": progress["upgraded"],
+        "next_plan": progress["next_plan"],
+        "missions": progress["missions"],
+        "quota": user.quota_status(),
+    })
 
 
 @app.get("/status")
@@ -299,8 +386,16 @@ def models():
 
         resp.raise_for_status()
         data = resp.json()
+        allowed = set(current_user().allowed_models)
         for m in data.get("models", []):
             m.update(MODEL_DISPLAY.get(m.get("id"), {}))
+            # Le modèle reste listé (pour donner envie de débloquer le
+            # forfait qui y donne accès) mais marqué "locked" : /chat et
+            # /chat/stream refusent de toute façon un modèle non autorisé,
+            # ce marquage ne sert qu'à l'affichage (cadenas, etc.).
+            m["locked"] = m.get("id") not in allowed
+        if data.get("default") not in allowed and allowed:
+            data["default"] = next(iter(allowed))
         return jsonify(data)
 
     except requests.exceptions.Timeout:
@@ -329,16 +424,20 @@ def models():
 def chat():
     """Proxy vers POST {OPSIOM_API_URL}/chat.
 
-    Chaque compte a droit à DAILY_TOKEN_QUOTA tokens par jour, un quota tenu
-    par Octix et PARTAGÉ avec le CLI (voir fetch_quota_status/consume_quota
-    ci-dessus) — ce n'est plus une table locale à ce front. Le quota est
-    vérifié avant d'appeler l'API distante (pour ne rien consommer côté PC
-    inutilement) et décompté seulement si la réponse revient avec succès —
-    un message qui échoue (timeout, PC éteint...) n'est jamais compté."""
-    quota = fetch_quota_status()
-    if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
+    Chaque compte a droit à un nombre de tokens/jour qui dépend de son
+    FORFAIT (voir plans.py) : c'est le compteur local (models.py, table
+    users) qui fait foi ici. Octix est aussi notifié en best-effort (pour
+    rester à peu près cohérent avec le CLI) mais ne bloque plus rien. Le
+    quota est vérifié avant d'appeler l'API distante (pour ne rien
+    consommer côté PC inutilement) et décompté seulement si la réponse
+    revient avec succès — un message qui échoue (timeout, PC éteint...)
+    n'est jamais compté."""
+    user = current_user()
+    quota = user.quota_status()
+    if not user.can_send_message():
         return jsonify({
-            "error": f"Quota gratuit atteint ({quota.get('limit', DAILY_TOKEN_QUOTA)} tokens/jour). Réessaie demain.",
+            "error": f"Quota {plans.plan_config(user.plan)['label']} atteint ({quota['limit']} tokens/jour). "
+                     f"Réessaie demain, ou débloque un forfait supérieur (voir /progression).",
             "quota": quota,
         }), 429
 
@@ -351,10 +450,15 @@ def chat():
         return jsonify({"error": f"Message trop long ({MAX_MESSAGE_CHARS} caractères max)."}), 413
 
     # Identifiant du modèle choisi dans le sélecteur ("nano", "small", "large").
-    # Le serveur valide lui-même la valeur et renvoie une 400 si elle est inconnue.
+    # Le serveur valide lui-même la valeur et renvoie une 400 si elle est inconnue,
+    # mais on vérifie déjà ici que le forfait du compte y donne droit.
     model_id = payload.get("model") or DEFAULT_MODEL_ID
     if not isinstance(model_id, str) or len(model_id) > 32:
         return jsonify({"error": "Identifiant de modèle invalide."}), 400
+    if model_id not in user.allowed_models:
+        return jsonify({
+            "error": f"Le modèle « {model_id} » n'est pas inclus dans {plans.plan_config(user.plan)['label']}.",
+        }), 403
 
     body = {
         "message": message,
@@ -383,7 +487,9 @@ def chat():
         # sinon retombe sur la même estimation que le CLI, pour rester
         # cohérent entre les deux consommateurs du même quota.
         tokens_used = data.get("tokens_used") or (estimate_tokens(message) + estimate_tokens(response_text))
-        quota_after = consume_quota(tokens_used)
+        user.register_message_sent(tokens_used)
+        consume_quota(tokens_used)  # best-effort, voir commentaire en tête de fichier
+        quota_after = user.quota_status()
 
         return jsonify({
             "response": response_text,
@@ -439,10 +545,12 @@ def chat_stream():
     reçu (c'est lui qui porte le nombre de tokens réellement générés) :
     on intercepte donc cet évènement 'done' au passage pour y injecter le
     statut de quota à jour, avant de le transmettre au navigateur."""
-    quota = fetch_quota_status()
-    if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
+    user = current_user()
+    quota = user.quota_status()
+    if not user.can_send_message():
         return jsonify({
-            "error": f"Quota gratuit atteint ({quota.get('limit', DAILY_TOKEN_QUOTA)} tokens/jour). Réessaie demain.",
+            "error": f"Quota {plans.plan_config(user.plan)['label']} atteint ({quota['limit']} tokens/jour). "
+                     f"Réessaie demain, ou débloque un forfait supérieur (voir /progression).",
             "quota": quota,
         }), 429
 
@@ -457,6 +565,10 @@ def chat_stream():
     model_id = payload.get("model") or DEFAULT_MODEL_ID
     if not isinstance(model_id, str) or len(model_id) > 32:
         return jsonify({"error": "Identifiant de modèle invalide."}), 400
+    if model_id not in user.allowed_models:
+        return jsonify({
+            "error": f"Le modèle « {model_id} » n'est pas inclus dans {plans.plan_config(user.plan)['label']}.",
+        }), 403
 
     body = {
         "message": message,
@@ -516,7 +628,9 @@ def chat_stream():
                         event = None
                     if isinstance(event, dict) and event.get("done"):
                         tokens_used = event.get("tokens_used") or 0
-                        event["quota"] = consume_quota(tokens_used)
+                        user.register_message_sent(tokens_used)
+                        consume_quota(tokens_used)  # best-effort, voir commentaire en tête de fichier
+                        event["quota"] = user.quota_status()
                         logger.info(
                             f"Réponse Opsiom (stream, {model_id}) obtenue en {time.time() - t0:.1f}s"
                         )
