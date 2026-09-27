@@ -43,12 +43,13 @@ Quota de tokens :
   compte, donc décomptent le même compteur -- régénérer sa clé API, ou en
   créer une par appareil, ne redonne donc plus de tokens gratuits.
 """
+import json
 import logging
 import os
 import time
 
 import requests
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, Response, jsonify, render_template, request, session, stream_with_context
 
 from auth import OCTIX_PORTAL_URL, OCTIX_URL, auth_bp, current_username, login_required
 
@@ -425,6 +426,107 @@ def chat():
     except Exception as e:  # garde-fou générique
         logger.exception("Erreur inattendue en appelant /chat")
         return jsonify({"error": f"Erreur inattendue côté serveur : {e}"}), 500
+
+
+@app.post("/chat/stream")
+@login_required
+def chat_stream():
+    """Proxy vers POST {OPSIOM_API_URL}/chat/stream : relaie le flux SSE
+    (token par token) tel quel au navigateur, pour l'affichage progressif.
+
+    Mêmes règles de quota que /chat (vérifié avant l'appel), mais le
+    décompte réel ne peut se faire qu'une fois le dernier évènement SSE
+    reçu (c'est lui qui porte le nombre de tokens réellement générés) :
+    on intercepte donc cet évènement 'done' au passage pour y injecter le
+    statut de quota à jour, avant de le transmettre au navigateur."""
+    quota = fetch_quota_status()
+    if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
+        return jsonify({
+            "error": f"Quota gratuit atteint ({quota.get('limit', DAILY_TOKEN_QUOTA)} tokens/jour). Réessaie demain.",
+            "quota": quota,
+        }), 429
+
+    payload = request.get_json(silent=True) or {}
+    message = (payload.get("message") or "").strip()
+
+    if not message:
+        return jsonify({"error": "Message vide."}), 400
+    if len(message) > MAX_MESSAGE_CHARS:
+        return jsonify({"error": f"Message trop long ({MAX_MESSAGE_CHARS} caractères max)."}), 413
+
+    model_id = payload.get("model") or DEFAULT_MODEL_ID
+    if not isinstance(model_id, str) or len(model_id) > 32:
+        return jsonify({"error": "Identifiant de modèle invalide."}), 400
+
+    body = {
+        "message": message,
+        "model": model_id,
+        "max_new_tokens": _clamp(payload.get("max_new_tokens", 200), 200, 1, MAX_NEW_TOKENS_LIMIT, int),
+        "temperature": _clamp(payload.get("temperature", 0.7), 0.7, 0.0, 2.0),
+        "top_k": _clamp(payload.get("top_k", 40), 40, 0, 200, int),
+        "top_p": _clamp(payload.get("top_p", 0.9), 0.9, 0.0, 1.0),
+        "repetition_penalty": _clamp(payload.get("repetition_penalty", 1.3), 1.3, 1.0, 2.0),
+    }
+
+    try:
+        upstream = requests.post(
+            f"{OPSIOM_API_URL}/chat/stream",
+            json=body, headers=_headers(),
+            timeout=REQUEST_TIMEOUT, stream=True,
+        )
+    except requests.exceptions.Timeout:
+        logger.warning(f"Timeout après {REQUEST_TIMEOUT}s sur /chat/stream (modèle {model_id}).")
+        return jsonify({
+            "error": "Opsiom met trop de temps à répondre (génération lente sur CPU). "
+                     "Essaie un modèle plus petit ou un message plus court.",
+        }), 504
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connexion impossible à Opsiom : {e}")
+        return jsonify({"error": "Impossible de joindre Opsiom. Le PC est peut-être éteint ou hors ligne."}), 502
+
+    ngrok_msg = _ngrok_error(upstream)
+    if ngrok_msg:
+        upstream.close()
+        return jsonify({"error": ngrok_msg}), 502
+
+    if upstream.status_code >= 400:
+        try:
+            data = upstream.json()
+            error_msg = data.get("error", "Requête invalide.")
+        except ValueError:
+            error_msg = f"Opsiom a renvoyé une erreur ({upstream.status_code})."
+        upstream.close()
+        return jsonify({"error": error_msg}), upstream.status_code if upstream.status_code == 429 else 502
+
+    t0 = time.time()
+
+    def relay():
+        try:
+            for line in upstream.iter_lines(decode_unicode=True):
+                if line is None:
+                    continue
+                if not line:
+                    # Ligne vide = séparateur d'évènement SSE, à préserver telle quelle.
+                    yield "\n"
+                    continue
+                if line.startswith("data: "):
+                    try:
+                        event = json.loads(line[len("data: "):])
+                    except ValueError:
+                        event = None
+                    if isinstance(event, dict) and event.get("done"):
+                        tokens_used = event.get("tokens_used") or 0
+                        event["quota"] = consume_quota(tokens_used)
+                        logger.info(
+                            f"Réponse Opsiom (stream, {model_id}) obtenue en {time.time() - t0:.1f}s"
+                        )
+                        yield f"data: {json.dumps(event)}\n"
+                        continue
+                yield line + "\n"
+        finally:
+            upstream.close()
+
+    return Response(stream_with_context(relay()), mimetype="text/event-stream")
 
 
 if __name__ == "__main__":
