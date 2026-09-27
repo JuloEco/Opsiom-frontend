@@ -13,6 +13,22 @@
 #   - Les checkpoints sont téléchargés depuis Hugging Face à la demande.
 #   - Le cache Hugging Face évite les téléchargements inutiles.
 #   - Le port peut être fourni par Render via PORT.
+#   - /api/chat et /api/chat/stream acceptent désormais soit la clé
+#     partagée du proxy Render (Authorization: Bearer OPSIOM_API_KEY), soit
+#     une clé API Octix personnelle (X-API-Key) -- dans ce second cas, le
+#     quota de tokens du compte est vérifié puis décompté auprès d'Octix
+#     (voir _authenticate / _quota_status / _consume_quota), le même
+#     compteur PARTAGÉ que celui affiché dans l'interface web.
+#   - /api/chat/stream existe pour le CLI opsiom (SSE "data: {...}\n\n") :
+#     la génération reste bloquante côté modèle, seul l'envoi au client est
+#     découpé mot par mot pour l'affichage progressif.
+#
+# Variables d'environnement supplémentaires :
+#   OCTIX_URL          - URL de l'API Octix (défaut: http://localhost:5050)
+#   OPSIOM_API_KEY      - secret partagé avec le proxy Render (optionnel ;
+#                         si absent, ce serveur reste ouvert sans clé, comme
+#                         avant l'ajout de ce système)
+#   DAILY_TOKEN_QUOTA  - défaut: 500, doit matcher la valeur côté Octix
 #
 # Architecture :
 #
@@ -34,15 +50,18 @@
 # ============================================================================
 
 import gc
+import json
 import os
 import threading
+import time
 from dataclasses import dataclass
 
+import requests
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from flask import Flask, request, jsonify
+from flask import Flask, Response, request, jsonify, stream_with_context
 from flask_cors import CORS
 
 from pyngrok import ngrok
@@ -65,6 +84,95 @@ load_dotenv()
 HF_REPO_ID = "JuloEco/opsiom-fr-checkpoints"
 
 TOKENIZER_FILENAME = "fr_bpe_tokenizer.json"
+
+
+# ============================================================================
+# Auth & quota — clé API personnelle (CLI) vs clé partagée (proxy Render)
+#
+# Deux façons d'appeler ce serveur :
+#   1. Le frontend Opsiom (Render) : un secret UNIQUE et partagé côté serveur
+#      (OPSIOM_API_KEY), envoyé en "Authorization: Bearer ...". Ce chemin ne
+#      décompte PAS de quota ici : le frontend a déjà vérifié/décompté le
+#      quota du compte connecté auprès d'Octix avant d'appeler /api/chat.
+#   2. Le CLI opsiom, en direct : la clé API PERSONNELLE de l'utilisateur
+#      (Octix), envoyée en "X-API-Key". Ce chemin est vérifié auprès d'Octix
+#      (/verify-api-key) et décompte le quota de tokens du compte auprès
+#      d'Octix (/account/quota/consume) -- le MÊME quota, partagé avec le
+#      web, puisque décompté par compte et non par clé (voir Octix_API).
+# ============================================================================
+
+OCTIX_URL = os.environ.get("OCTIX_URL", "http://localhost:5050")
+OPSIOM_API_KEY = os.environ.get("OPSIOM_API_KEY", "").strip()
+DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "500"))
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimation grossière (~4 caractères/token), identique à celle du CLI
+    et du frontend, faute de tokenizer exact partagé entre les trois."""
+    return max(1, round(len(text or "") / 4))
+
+
+def _authenticate(req):
+    """Résout l'appelant. Renvoie (mode, api_key_ou_none, error_ou_none) :
+      - mode == "trusted" : le proxy Render (clé partagée OPSIOM_API_KEY
+        correcte, ou aucune clé partagée configurée ici -- dev local).
+        Aucun quota décompté sur ce chemin (le proxy l'a déjà fait auprès
+        d'Octix pour le compte web concerné).
+      - mode == "api_key" : une clé API Octix personnelle valide -- le
+        quota du compte doit être vérifié puis décompté. `api_key_ou_none`
+        contient alors la clé elle-même (réutilisée telle quelle pour les
+        appels de quota à Octix, qui l'accepte directement).
+    error_ou_none contient un message si l'authentification a échoué."""
+    auth_header = req.headers.get("Authorization", "")
+    bearer = auth_header[7:].strip() if auth_header.startswith("Bearer ") else None
+    api_key = req.headers.get("X-API-Key") or req.headers.get("X-Api-Key")
+
+    if api_key:
+        try:
+            r = requests.post(f"{OCTIX_URL}/verify-api-key", json={"api_key": api_key}, timeout=8)
+            data = r.json()
+        except (requests.exceptions.RequestException, ValueError):
+            return None, None, "service de comptes injoignable, réessaie plus tard."
+        if not data.get("valid"):
+            return None, None, "clé API invalide ou expirée."
+        return "api_key", api_key, None
+
+    if OPSIOM_API_KEY:
+        if bearer == OPSIOM_API_KEY:
+            return "trusted", None, None
+        return None, None, "authentification requise (clé API personnelle ou clé partagée)."
+
+    # Aucune clé partagée configurée sur ce serveur (dev local / usage perso) :
+    # on n'exige rien, comme avant l'ajout de ce système d'auth.
+    return "trusted", None, None
+
+
+def _quota_status(api_key: str):
+    """Statut du quota Octix du compte propriétaire de `api_key`, sans le
+    décompter. Renvoie un quota "plein" si Octix est injoignable."""
+    try:
+        r = requests.get(f"{OCTIX_URL}/account/quota", headers={"X-Api-Key": api_key}, timeout=5)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.RequestException:
+        return {"used": 0, "limit": DAILY_TOKEN_QUOTA, "remaining": DAILY_TOKEN_QUOTA}
+
+
+def _consume_quota(api_key: str, tokens: int):
+    """Décompte `tokens` sur le quota Octix du compte propriétaire de
+    `api_key` et renvoie le nouveau statut. Ne bloque pas la réponse déjà
+    générée si Octix est injoignable à ce moment précis."""
+    try:
+        r = requests.post(
+            f"{OCTIX_URL}/account/quota/consume",
+            json={"tokens": max(0, int(tokens))},
+            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            timeout=5,
+        )
+        data = r.json()
+        return data.get("quota") or _quota_status(api_key)
+    except requests.exceptions.RequestException:
+        return _quota_status(api_key)
 
 
 MODEL_CATALOG = [
@@ -1195,6 +1303,8 @@ CORS(
     allow_headers=[
         "Content-Type",
         "ngrok-skip-browser-warning",
+        "Authorization",
+        "X-API-Key",
     ],
 )
 
@@ -1226,6 +1336,45 @@ def list_models():
 
 
 # ============================================================================
+# Génération — factorisée pour être partagée entre /api/chat (non-stream)
+# et /api/chat/stream (utilisée par le CLI).
+# ============================================================================
+
+def _resolve_model_and_message(data: dict):
+    """Valide message/model_id. Renvoie (model_id, message, erreur_jsonify_ou_none)."""
+    message = data.get("message", "")
+    if not message:
+        return None, None, (jsonify({"error": "message manquant"}), 400)
+
+    model_id = data.get("model", DEFAULT_MODEL_ID)
+    if get_model_entry(model_id) is None:
+        available = ", ".join(entry["id"] for entry in MODEL_CATALOG)
+        return None, None, (
+            jsonify({"error": f"modèle inconnu '{model_id}'. Disponibles : {available}"}),
+            400,
+        )
+    return model_id, message, None
+
+
+def _generate(model_id: str, message: str, data: dict) -> str:
+    """Lance la génération elle-même (bloquante) et renvoie le texte."""
+    model = get_model(model_id)
+    prompt = build_chat_prompt(message)
+    response_text = model.generate(
+        prompt=prompt,
+        tokenizer=tokenizer,
+        max_new_tokens=int(data.get("max_new_tokens", 100)),
+        temperature=float(data.get("temperature", 0.8)),
+        top_k=int(data.get("top_k", 40)),
+        top_p=float(data.get("top_p", 0.9)),
+        repetition_penalty=float(data.get("repetition_penalty", 1.3)),
+    )
+    return response_text or (
+        "(Je n'ai pas réussi à générer de réponse — essayez de reformuler votre message.)"
+    )
+
+
+# ============================================================================
 # POST /api/chat
 # ============================================================================
 
@@ -1235,126 +1384,94 @@ def list_models():
 )
 def chat():
 
-    data = request.get_json(
-        force=True
-    ) or {}
+    mode, api_key, auth_error = _authenticate(request)
+    if auth_error:
+        return jsonify({"error": auth_error}), 401
 
-    message = data.get(
-        "message",
-        "",
-    )
+    if mode == "api_key":
+        quota = _quota_status(api_key)
+        if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
+            return jsonify({
+                "error": f"quota quotidien de {quota.get('limit', DAILY_TOKEN_QUOTA)} tokens atteint.",
+                "quota": quota,
+            }), 429
 
-    if not message:
-
-        return jsonify(
-            {
-                "error": "message manquant"
-            }
-        ), 400
-
-    model_id = data.get(
-        "model",
-        DEFAULT_MODEL_ID,
-    )
-
-    if get_model_entry(
-        model_id
-    ) is None:
-
-        available = ", ".join(
-            entry["id"]
-            for entry in MODEL_CATALOG
-        )
-
-        return jsonify(
-            {
-                "error": (
-                    f"modèle inconnu "
-                    f"'{model_id}'. "
-                    f"Disponibles : "
-                    f"{available}"
-                )
-            }
-        ), 400
+    data = request.get_json(force=True) or {}
+    model_id, message, error = _resolve_model_and_message(data)
+    if error:
+        return error
 
     try:
+        response_text = _generate(model_id, message, data)
 
-        model = get_model(
-            model_id
-        )
+        result = {"response": response_text, "model": model_id}
+        if mode == "api_key":
+            tokens_used = _estimate_tokens(message) + _estimate_tokens(response_text)
+            result["tokens_used"] = tokens_used
+            result["remaining_quota"] = _consume_quota(api_key, tokens_used).get("remaining", 0)
 
-        prompt = build_chat_prompt(
-            message
-        )
-
-        response_text = model.generate(
-            prompt=prompt,
-            tokenizer=tokenizer,
-            max_new_tokens=int(
-                data.get(
-                    "max_new_tokens",
-                    100,
-                )
-            ),
-            temperature=float(
-                data.get(
-                    "temperature",
-                    0.8,
-                )
-            ),
-            top_k=int(
-                data.get(
-                    "top_k",
-                    40,
-                )
-            ),
-            top_p=float(
-                data.get(
-                    "top_p",
-                    0.9,
-                )
-            ),
-            repetition_penalty=float(
-                data.get(
-                    "repetition_penalty",
-                    1.3,
-                )
-            ),
-        )
-
-        if not response_text:
-
-            response_text = (
-                "(Je n'ai pas réussi "
-                "à générer de réponse — "
-                "essayez de reformuler "
-                "votre message.)"
-            )
-
-        return jsonify(
-            {
-                "response": response_text,
-                "model": model_id,
-            }
-        )
+        return jsonify(result)
 
     except Exception as exc:
+        print("❌ Erreur pendant la génération :", repr(exc))
+        return jsonify({"error": "Erreur pendant la génération.", "details": str(exc)}), 500
 
-        print(
-            "❌ Erreur pendant "
-            "la génération :",
-            repr(exc),
-        )
 
-        return jsonify(
-            {
-                "error": (
-                    "Erreur pendant "
-                    "la génération."
-                ),
-                "details": str(exc),
-            }
-        ), 500
+# ============================================================================
+# POST /api/chat/stream — utilisée par le CLI opsiom.
+#
+# Le modèle local ne produit pas encore ses tokens un par un (model.generate
+# renvoie le texte complet d'un coup) : on simule donc un flux en découpant
+# la réponse déjà générée en mots, façon SSE ("data: {...}\n\n"), ce qui
+# suffit à alimenter l'affichage progressif du CLI sans changer son format
+# d'échange. Le dernier événement ({"done": true, ...}) porte le décompte
+# de tokens qui fait foi.
+# ============================================================================
+
+@app.route(
+    "/api/chat/stream",
+    methods=["POST"],
+)
+def chat_stream():
+
+    mode, api_key, auth_error = _authenticate(request)
+    if auth_error:
+        return jsonify({"error": auth_error}), 401
+
+    if mode == "api_key":
+        quota = _quota_status(api_key)
+        if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
+            return jsonify({
+                "error": f"quota quotidien de {quota.get('limit', DAILY_TOKEN_QUOTA)} tokens atteint.",
+                "quota": quota,
+            }), 429
+
+    data = request.get_json(force=True) or {}
+    model_id, message, error = _resolve_model_and_message(data)
+    if error:
+        return error
+
+    try:
+        response_text = _generate(model_id, message, data)
+    except Exception as exc:
+        print("❌ Erreur pendant la génération :", repr(exc))
+        return jsonify({"error": "Erreur pendant la génération.", "details": str(exc)}), 500
+
+    def _events():
+        words = response_text.split(" ")
+        for i, word in enumerate(words):
+            piece = word if i == 0 else " " + word
+            yield f"data: {json.dumps({'token': piece})}\n\n"
+            time.sleep(0.015)  # rythme de lecture, purement cosmétique
+
+        final_event = {"done": True, "model": model_id}
+        if mode == "api_key":
+            tokens_used = _estimate_tokens(message) + _estimate_tokens(response_text)
+            final_event["tokens_used"] = tokens_used
+            final_event["remaining_quota"] = _consume_quota(api_key, tokens_used).get("remaining", 0)
+        yield f"data: {json.dumps(final_event)}\n\n"
+
+    return Response(stream_with_context(_events()), mimetype="text/event-stream")
 
 
 # ============================================================================

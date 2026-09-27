@@ -15,8 +15,12 @@ Ce module :
   3. Fournit login_required, un decorateur qui bloque l'acces si
      session["user"] est absent (redirection HTML, ou JSON pour les routes
      appelees en fetch() par le JS : /status, /models, /chat).
-  4. Maintient une "ombre" locale (table users, cf. models.py) qui sert
-     uniquement a suivre le quota de messages gratuits par compte.
+
+  Il n'y a plus de base de donnees locale ici : le quota gratuit (tokens/
+  jour) est desormais tenu par Octix (voir /account/quota* cote Octix_API
+  et fetch_quota_status()/consume_quota() dans app.py), pas par une table
+  "ombre" propre a ce front -- c'est ce qui permet de le PARTAGER avec le
+  CLI plutot que de le dupliquer par app.
 
 Variables d'environnement :
   OCTIX_URL         - URL de l'API Octix (le meme backend que celui utilise
@@ -29,8 +33,6 @@ from functools import wraps
 
 import requests
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
-
-from models import User, db
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -71,20 +73,6 @@ def current_username():
     return session.get("user")
 
 
-def current_user_record():
-    """Renvoie (en la creant si besoin) l'ombre locale de quota associee au
-    compte actuellement en session. None si personne n'est connecte."""
-    username = session.get("user")
-    if not username:
-        return None
-    user = User.query.filter_by(username=username).first()
-    if user is None:
-        user = User(username=username)
-        db.session.add(user)
-        db.session.commit()
-    return user
-
-
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
     if "user" in session:
@@ -107,7 +95,6 @@ def login():
 
     session["user"] = username
     session["octix_token"] = result
-    current_user_record()  # crée la ligne de quota locale si c'est une première connexion
 
     next_url = request.args.get("next")
     # Evite les redirections externes (open redirect) : uniquement des

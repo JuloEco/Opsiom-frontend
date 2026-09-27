@@ -17,22 +17,35 @@ Routes exposées au navigateur :
   POST /chat      -> proxy de POST {API}/chat     (accepte "message" + "model")
 
 Variables d'environnement :
-  OPSIOM_API_URL   - URL du tunnel ngrok, avec ou sans le suffixe "/api"
-                     (défaut: https://pursuable-underpaid-boss.ngrok-free.dev)
-  OPSIOM_API_KEY   - optionnel, si tu ajoutes une auth Bearer côté serveur
-  OPSIOM_TIMEOUT   - défaut: 120 (secondes). L'inférence CPU est lente,
-                     surtout avec le modèle 220M.
+  OPSIOM_API_URL     - URL du tunnel ngrok, avec ou sans le suffixe "/api"
+                       (défaut: https://pursuable-underpaid-boss.ngrok-free.dev)
+  OPSIOM_API_KEY     - optionnel, si tu ajoutes une auth Bearer côté serveur
+  OPSIOM_TIMEOUT     - défaut: 120 (secondes). L'inférence CPU est lente,
+                       surtout avec le modèle 220M.
+  DAILY_TOKEN_QUOTA  - défaut: 500. Doit rester identique à la valeur
+                       configurée côté Octix (DAILY_TOKEN_QUOTA) : cette
+                       variable ne sert ici qu'à afficher un quota par
+                       défaut cohérent si Octix est injoignable, le
+                       décompte qui fait foi est toujours celui d'Octix.
+
+Quota de tokens :
+  Le quota gratuit (500 tokens/jour par défaut) n'est PLUS suivi dans une
+  base locale à ce front : il est délégué à Octix (voir /account/quota et
+  /account/quota/consume côté Octix_API), le même service qui gère les
+  comptes. C'est ce qui permet de PARTAGER un seul et même quota entre
+  cette interface web (identifiée par le token de session Octix) et le CLI
+  opsiom (identifié par une clé API Octix) : les deux résolvent le même
+  compte, donc décomptent le même compteur -- régénérer sa clé API, ou en
+  créer une par appareil, ne redonne donc plus de tokens gratuits.
 """
-import json
 import logging
 import os
 import time
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import Flask, jsonify, render_template, request, session
 
-from auth import auth_bp, current_user_record, current_username, login_required
-from models import db
+from auth import OCTIX_PORTAL_URL, OCTIX_URL, auth_bp, current_username, login_required
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,33 +66,73 @@ if not app.secret_key:
     import secrets as _secrets
     app.secret_key = _secrets.token_hex(32)
 
-# --- Base de données ------------------------------------------------
-# SQLite par défaut (fichier dans instance/), ou une vraie base via DATABASE_URL
-# (ex. Postgres sur Render — le disque de Render "free" est éphémère, donc
-# SQLite n'y survit pas à un redéploiement).
-os.makedirs(app.instance_path, exist_ok=True)
-default_db_uri = "sqlite:///" + os.path.join(app.instance_path, "opsiom.db")
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", default_db_uri)
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-db.init_app(app)
-
-with app.app_context():
-    db.create_all()
-
 # --- Authentification ------------------------------------------------
 # Déléguée à Octix, via une session Flask simple (même méthode que
 # LearnCode/Omnia) : voir auth.py pour login_required, octix_login, etc.
 app.register_blueprint(auth_bp)
 
 
-# --- Quota gratuit ----------------------------------------------------
-# Nombre de messages qu'un compte peut envoyer par jour avant d'être bloqué.
-FREE_DAILY_QUOTA = int(os.environ.get("FREE_DAILY_QUOTA", "20"))
+# --- Quota gratuit — PARTAGÉ par compte, décompté côté Octix -----------
+# Valeur affichée par défaut si Octix est injoignable ; le compteur qui
+# fait réellement foi (celui qu'on incrémente/vérifie) vit dans Octix,
+# voir fetch_quota_status() / consume_quota() ci-dessous.
+DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "500"))
 
 
-@app.context_processor
-def inject_free_quota():
-    return {"free_daily_quota": FREE_DAILY_QUOTA}
+def _octix_auth_headers() -> dict:
+    """Authentifie l'appel à Octix avec le token de session de la personne
+    connectée : c'est ce qui fait que le quota décompté ici retombe sur le
+    MÊME compte que celui que le CLI décompte via sa clé API (voir
+    Octix_API /account/quota, qui accepte indifféremment un Bearer JWT ou
+    une clé API — les deux résolvent le même utilisateur)."""
+    headers = {"Content-Type": "application/json"}
+    token = session.get("octix_token")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_quota_status() -> dict:
+    """Statut du quota de TOKENS du compte connecté, tel que tenu par Octix.
+    Si Octix est injoignable, on affiche un quota "plein" par défaut plutôt
+    que de bloquer le chat pour un problème sans rapport avec le quota."""
+    try:
+        resp = requests.get(f"{OCTIX_URL}/account/quota", headers=_octix_auth_headers(), timeout=5)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.RequestException:
+        logger.warning("Octix injoignable sur /account/quota — quota par défaut affiché.")
+        return {"used": 0, "limit": DAILY_TOKEN_QUOTA, "remaining": DAILY_TOKEN_QUOTA}
+
+
+def consume_quota(tokens: int) -> dict:
+    """Décompte `tokens` sur le quota Octix du compte connecté et renvoie le
+    nouveau statut. Si Octix est injoignable une fois la réponse déjà
+    générée, on ne fait pas échouer la requête pour autant : on retombe sur
+    le statut par défaut (le prochain /account/quota rattrapera l'état réel
+    dès qu'Octix est de nouveau joignable)."""
+    try:
+        resp = requests.post(
+            f"{OCTIX_URL}/account/quota/consume",
+            json={"tokens": max(0, int(tokens))},
+            headers=_octix_auth_headers(),
+            timeout=5,
+        )
+        data = resp.json()
+        if resp.status_code >= 400:
+            return data.get("quota") or fetch_quota_status()
+        return data.get("quota") or fetch_quota_status()
+    except requests.exceptions.RequestException:
+        logger.warning("Octix injoignable sur /account/quota/consume — décompte ignoré cette fois.")
+        return fetch_quota_status()
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimation grossière (~4 caractères/token), identique à celle du CLI
+    opsiom-cli, pour rester cohérent entre les deux façons de consommer le
+    même quota. Le compteur qui fait foi reste celui d'Octix : ceci ne sert
+    qu'à savoir COMBIEN lui envoyer à décompter."""
+    return max(1, round(len(text or "") / 4))
 
 
 def _normalize_api_url(raw: str) -> str:
@@ -152,11 +205,11 @@ def _ngrok_error(resp) -> str | None:
 @app.get("/")
 @login_required
 def index():
-    user = current_user_record()
     return render_template(
         "index.html",
         username=current_username(),
-        quota=user.quota_status(FREE_DAILY_QUOTA),
+        quota=fetch_quota_status(),
+        octix_portal_url=OCTIX_PORTAL_URL,
     )
 
 
@@ -175,8 +228,7 @@ def status():
 
         resp.raise_for_status()
         data = resp.json()
-        quota = current_user_record().quota_status(FREE_DAILY_QUOTA)
-        return jsonify({"online": True, "quota": quota, **data})
+        return jsonify({"online": True, "quota": fetch_quota_status(), **data})
 
     except requests.exceptions.Timeout:
         logger.warning("Timeout sur /health — le PC est peut-être occupé par une génération.")
@@ -257,15 +309,16 @@ def models():
 def chat():
     """Proxy vers POST {OPSIOM_API_URL}/chat.
 
-    Chaque compte a droit à FREE_DAILY_QUOTA messages par jour. Le quota est
+    Chaque compte a droit à DAILY_TOKEN_QUOTA tokens par jour, un quota tenu
+    par Octix et PARTAGÉ avec le CLI (voir fetch_quota_status/consume_quota
+    ci-dessus) — ce n'est plus une table locale à ce front. Le quota est
     vérifié avant d'appeler l'API distante (pour ne rien consommer côté PC
     inutilement) et décompté seulement si la réponse revient avec succès —
     un message qui échoue (timeout, PC éteint...) n'est jamais compté."""
-    user = current_user_record()
-    if not user.can_send_message(FREE_DAILY_QUOTA):
-        quota = user.quota_status(FREE_DAILY_QUOTA)
+    quota = fetch_quota_status()
+    if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
         return jsonify({
-            "error": f"Quota gratuit atteint ({quota['limit']} messages/jour). Réessaie demain.",
+            "error": f"Quota gratuit atteint ({quota.get('limit', DAILY_TOKEN_QUOTA)} tokens/jour). Réessaie demain.",
             "quota": quota,
         }), 429
 
@@ -305,11 +358,17 @@ def chat():
         data = resp.json()
         logger.info(f"Réponse Opsiom ({model_id}) obtenue en {time.time() - t0:.1f}s")
 
-        user.register_message_sent()
+        response_text = data.get("response", "")
+        # Utilise le décompte du serveur d'inférence s'il en fournit un ;
+        # sinon retombe sur la même estimation que le CLI, pour rester
+        # cohérent entre les deux consommateurs du même quota.
+        tokens_used = data.get("tokens_used") or (estimate_tokens(message) + estimate_tokens(response_text))
+        quota_after = consume_quota(tokens_used)
+
         return jsonify({
-            "response": data.get("response", ""),
+            "response": response_text,
             "model": data.get("model", model_id),
-            "quota": user.quota_status(FREE_DAILY_QUOTA),
+            "quota": quota_after,
         })
 
     except requests.exceptions.Timeout:
@@ -347,110 +406,6 @@ def chat():
     except Exception as e:  # garde-fou générique
         logger.exception("Erreur inattendue en appelant /chat")
         return jsonify({"error": f"Erreur inattendue côté serveur : {e}"}), 500
-
-
-@app.post("/chat/stream")
-@login_required
-def chat_stream():
-    """Proxy vers POST {OPSIOM_API_URL}/chat/stream (Server-Sent Events).
-
-    Même validation et même quota que /chat, mais la réponse est relayée au
-    fil de l'eau : chaque évènement JSON reçu du serveur Opsiom
-    ({"token": "..."} ou {"done": true, "model": "..."}) est retransmis tel
-    quel au navigateur, sous forme d'évènement SSE.
-
-    Le quota n'est décompté qu'à la réception de l'évènement final "done"
-    (donc seulement si le flux est allé jusqu'au bout), et la réponse
-    "quota" à jour est ajoutée à cet évènement pour que le front puisse
-    mettre sa barre à jour sans appel supplémentaire."""
-    user = current_user_record()
-    if not user.can_send_message(FREE_DAILY_QUOTA):
-        quota = user.quota_status(FREE_DAILY_QUOTA)
-        message = f"Quota gratuit atteint ({quota['limit']} messages/jour). Réessaie demain."
-
-        def quota_exceeded():
-            yield f"data: {json.dumps({'error': message, 'quota': quota})}\n\n"
-
-        return Response(stream_with_context(quota_exceeded()), mimetype="text/event-stream")
-
-    payload = request.get_json(silent=True) or {}
-    message = (payload.get("message") or "").strip()
-
-    if not message:
-        return jsonify({"error": "Message vide."}), 400
-    if len(message) > MAX_MESSAGE_CHARS:
-        return jsonify({"error": f"Message trop long ({MAX_MESSAGE_CHARS} caractères max)."}), 413
-
-    model_id = payload.get("model") or DEFAULT_MODEL_ID
-    if not isinstance(model_id, str) or len(model_id) > 32:
-        return jsonify({"error": "Identifiant de modèle invalide."}), 400
-
-    body = {
-        "message": message,
-        "model": model_id,
-        "max_new_tokens": _clamp(payload.get("max_new_tokens", 200), 200, 1, MAX_NEW_TOKENS_LIMIT, int),
-        "temperature": _clamp(payload.get("temperature", 0.7), 0.7, 0.0, 2.0),
-        "top_k": _clamp(payload.get("top_k", 40), 40, 0, 200, int),
-        "top_p": _clamp(payload.get("top_p", 0.9), 0.9, 0.0, 1.0),
-        "repetition_penalty": _clamp(payload.get("repetition_penalty", 1.3), 1.3, 1.0, 2.0),
-    }
-
-    t0 = time.time()
-
-    def relay():
-        try:
-            resp = requests.post(
-                f"{OPSIOM_API_URL}/chat/stream",
-                json=body, headers=_headers(), timeout=REQUEST_TIMEOUT, stream=True,
-            )
-
-            ngrok_msg = _ngrok_error(resp)
-            if ngrok_msg:
-                yield f"data: {json.dumps({'error': ngrok_msg})}\n\n"
-                return
-
-            if resp.status_code != 200:
-                body_txt = resp.text[:300]
-                logger.error(f"Erreur HTTP {resp.status_code} d'Opsiom (stream) : {body_txt}")
-                try:
-                    err_msg = resp.json().get("error", f"Opsiom a renvoyé une erreur ({resp.status_code}).")
-                except ValueError:
-                    err_msg = f"Opsiom a renvoyé une erreur ({resp.status_code})."
-                yield f"data: {json.dumps({'error': err_msg})}\n\n"
-                return
-
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line or not line.startswith("data: "):
-                    continue
-                try:
-                    evt = json.loads(line[len("data: "):])
-                except ValueError:
-                    continue
-
-                if evt.get("done"):
-                    logger.info(f"Stream Opsiom ({model_id}) terminé en {time.time() - t0:.1f}s")
-                    user.register_message_sent()
-                    evt["quota"] = user.quota_status(FREE_DAILY_QUOTA)
-
-                yield f"data: {json.dumps(evt)}\n\n"
-
-        except requests.exceptions.Timeout:
-            logger.warning(f"Timeout après {REQUEST_TIMEOUT}s sur /chat/stream (modèle {model_id}).")
-            yield f"data: {json.dumps({'error': 'Opsiom met trop de temps à répondre (génération lente sur CPU). Essaie un modèle plus petit ou un message plus court.'})}\n\n"
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connexion impossible à Opsiom (stream) : {e}")
-            yield f"data: {json.dumps({'error': 'Impossible de joindre Opsiom. Le PC est peut-être éteint ou hors ligne.'})}\n\n"
-
-        except Exception as e:  # garde-fou générique
-            logger.exception("Erreur inattendue en streamant /chat/stream")
-            yield f"data: {json.dumps({'error': f'Erreur inattendue côté serveur : {e}'})}\n\n"
-
-    return Response(
-        stream_with_context(relay()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 if __name__ == "__main__":

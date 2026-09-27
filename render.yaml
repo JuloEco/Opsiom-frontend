@@ -12,3 +12,9 @@ services:
         sync: false   # à saisir manuellement dans le dashboard Render, jamais en dur ici
       - key: OPSIOM_TIMEOUT
         value: "90"
+      - key: OCTIX_URL
+        sync: false   # URL de l'API Octix (le compteur de quota y vit désormais)
+      - key: OCTIX_PORTAL_URL
+        sync: false   # portail Octix (lien "Créer un compte")
+      - key: DAILY_TOKEN_QUOTA
+        value: "500"  # doit matcher la valeur configurée côté Octix
