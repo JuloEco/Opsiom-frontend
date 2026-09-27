@@ -645,7 +645,16 @@ async function refreshStatus() {
 }
 
 // ---------------------------------------------------------------------------
-// Envoi d'un message
+// Envoi d'un message — réponse en streaming (SSE) sur POST /chat
+//
+// Protocole attendu côté serveur : une réponse `text/event-stream`, avec un
+// événement par morceau de texte généré :
+//   data: {"token": "quelques mots "}\n\n
+// puis un dernier événement de fin portant les métadonnées :
+//   data: {"done": true, "model": "small", "tokens_used": 42, "quota": {...}}\n\n
+// En cas d'erreur avant le premier octet (quota épuisé, modèle indisponible…),
+// le serveur peut toujours répondre en JSON classique (non greffé en flux),
+// avec le champ "error" habituel — c'est ce que gère le bloc !resp.ok.
 // ---------------------------------------------------------------------------
 async function sendMessage(text) {
   const message = text.trim();
@@ -667,39 +676,92 @@ async function sendMessage(text) {
   const thinking = addThinking();
   currentAbortController = new AbortController();
 
+  let assistantEl = null;
+  let contentEl = null;
+  let rawText = "";
+  let finalMeta = null;
+
   try {
     const resp = await fetch("/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, model: modelId, ...settingsSnapshot }),
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ message, model: modelId, stream: true, ...settingsSnapshot }),
       signal: currentAbortController.signal,
     });
 
-    let data;
-    try {
-      data = await resp.json();
-    } catch (parseErr) {
-      throw new Error("Réponse du serveur illisible.");
-    }
-
-    if (data.quota) updateQuota(data.quota);
-
     if (!resp.ok) {
-      throw new Error(data.error || `Erreur serveur (${resp.status})`);
+      let errData = {};
+      try { errData = await resp.json(); } catch (parseErr) { /* corps non-JSON : on garde errData vide */ }
+      if (errData.quota) updateQuota(errData.quota);
+      throw new Error(errData.error || `Erreur serveur (${resp.status})`);
+    }
+    if (!resp.body) throw new Error("Le flux de réponse n'est pas disponible dans ce navigateur.");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Les événements SSE sont séparés par une ligne vide ; chacun porte
+      // une ligne "data: {...JSON...}".
+      let sepIndex;
+      while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex).trim();
+        buffer = buffer.slice(sepIndex + 2);
+        if (!rawEvent.startsWith("data:")) continue;
+
+        let payload;
+        try {
+          payload = JSON.parse(rawEvent.slice(5).trim());
+        } catch (parseErr) {
+          continue; // fragment illisible : on l'ignore plutôt que de casser tout le flux
+        }
+
+        if (payload.error) throw new Error(payload.error);
+
+        if (typeof payload.token === "string" && payload.token) {
+          if (!assistantEl) {
+            thinking.remove();
+            assistantEl = addBubble("assistant", "");
+            contentEl = assistantEl.querySelector(".msg-content");
+          }
+          rawText += payload.token;
+          assistantEl.dataset.raw = rawText;
+          contentEl.innerHTML = renderMarkdown(rawText);
+          if (isNearBottom()) conversation.scrollTop = conversation.scrollHeight;
+        }
+
+        if (payload.done) finalMeta = payload;
+      }
     }
 
-    const seconds = thinking.elapsedSeconds();
-    thinking.remove();
+    if (finalMeta && finalMeta.quota) updateQuota(finalMeta.quota);
 
-    const used = getModelInfo(data.model || modelId);
-    addBubble("assistant", data.response || "(réponse vide)", {
-      meta: `${used.label} · ${used.params} · ${seconds} s`,
-    });
+    if (!assistantEl) {
+      // Flux terminé sans le moindre token : on affiche quand même une bulle.
+      thinking.remove();
+      addBubble("assistant", "(réponse vide)");
+    } else {
+      const seconds = thinking.elapsedSeconds();
+      const used = getModelInfo((finalMeta && finalMeta.model) || modelId);
+      const metaEl = document.createElement("div");
+      metaEl.className = "bubble-meta";
+      metaEl.textContent = `${used.label} · ${used.params} · ${seconds} s`;
+      const actionBtn = assistantEl.querySelector(".msg-action-btn");
+      if (actionBtn) assistantEl.insertBefore(metaEl, actionBtn);
+      else assistantEl.appendChild(metaEl);
+    }
 
   } catch (err) {
-    thinking.remove();
+    if (!assistantEl) thinking.remove();
     if (err.name === "AbortError") {
-      addBubble("assistant", "Génération annulée.", { muted: true });
+      if (!assistantEl) addBubble("assistant", "Génération annulée.", { muted: true });
+      // Si du texte avait déjà été streamé, on le laisse tel quel plutôt que
+      // de l'effacer : l'utilisateur voit ce qui a eu le temps d'arriver.
     } else {
       console.error("Erreur lors de l'envoi du message :", err);
       addBubble("assistant", `Erreur : ${err.message}`, { error: true });
