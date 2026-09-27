@@ -598,36 +598,117 @@ async function sendMessage(text) {
   const thinking = addThinking();
   currentAbortController = new AbortController();
 
+  // La bulle assistant n'est créée qu'à l'arrivée du premier token : avant
+  // ça, on garde l'indicateur "Opsiom réfléchit".
+  let assistantEl = null;
+  let assistantContent = null;
+  let accumulated = "";
+  let doneReceived = false;
+
+  const finalizeBubble = (metaText) => {
+    if (!assistantEl) return;
+    assistantEl.dataset.raw = accumulated;
+    let metaEl = assistantEl.querySelector(".bubble-meta");
+    if (!metaEl) {
+      metaEl = document.createElement("div");
+      metaEl.className = "bubble-meta";
+      assistantEl.appendChild(metaEl);
+    }
+    metaEl.textContent = metaText;
+    if (!assistantEl.querySelector(".copy-btn")) {
+      assistantEl.appendChild(makeActionButton("copy"));
+    }
+  };
+
+  const appendToken = (piece) => {
+    if (!piece) return;
+    if (!assistantEl) {
+      thinking.remove();
+      assistantEl = addBubble("assistant", "");
+      assistantContent = assistantEl.querySelector(".msg-content");
+    }
+    accumulated += piece;
+    assistantEl.dataset.raw = accumulated;
+    assistantContent.innerHTML = renderMarkdown(accumulated);
+    if (isNearBottom()) conversation.scrollTop = conversation.scrollHeight;
+  };
+
   try {
-    const resp = await fetch("/chat", {
+    const resp = await fetch("/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, model: modelId, ...settingsSnapshot }),
       signal: currentAbortController.signal,
     });
 
-    let data;
-    try {
-      data = await resp.json();
-    } catch (parseErr) {
-      throw new Error("Réponse du serveur illisible.");
-    }
+    const isStream = (resp.headers.get("content-type") || "").includes("text/event-stream");
 
-    if (data.quota) updateQuota(data.quota);
-
-    if (!resp.ok) {
+    if (!isStream) {
+      // Le proxy répond en JSON classique quand ce n'est pas un flux :
+      // quota atteint, timeout, PC hors ligne, message invalide, etc.
+      let data;
+      try {
+        data = await resp.json();
+      } catch (parseErr) {
+        throw new Error("Réponse du serveur illisible.");
+      }
+      if (data.quota) updateQuota(data.quota);
       throw new Error(data.error || `Erreur serveur (${resp.status})`);
     }
 
-    const seconds = thinking.elapsedSeconds();
-    thinking.remove();
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-    const used = getModelInfo(data.model || modelId);
-    addBubble("assistant", data.response || "(réponse vide)", {
-      meta: `${used.label} · ${used.params} · ${seconds} s`,
-    });
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx;
+      while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        if (!rawEvent.startsWith("data: ")) continue;
+
+        let event;
+        try {
+          event = JSON.parse(rawEvent.slice(6));
+        } catch (parseErr) {
+          continue;
+        }
+
+        if (event.token) {
+          appendToken(event.token);
+        } else if (event.done) {
+          doneReceived = true;
+          if (event.quota) updateQuota(event.quota);
+          const used = getModelInfo(event.model || modelId);
+          const seconds = thinking.elapsedSeconds();
+          if (!assistantEl) {
+            thinking.remove();
+            assistantEl = addBubble("assistant", "(réponse vide)");
+          }
+          finalizeBubble(`${used.label} · ${used.params} · ${seconds} s`);
+        }
+      }
+    }
+
+    if (!doneReceived) {
+      // Le flux s'est arrêté sans évènement "done" explicite (connexion
+      // coupée en route, par exemple) : on finalise quand même la bulle
+      // avec ce qui a été reçu, plutôt que de la laisser sans méta.
+      const used = getModelInfo(modelId);
+      const seconds = thinking.elapsedSeconds();
+      if (!assistantEl) {
+        thinking.remove();
+        assistantEl = addBubble("assistant", "(réponse vide)");
+      }
+      finalizeBubble(`${used.label} · ${used.params} · ${seconds} s`);
+    }
 
   } catch (err) {
+    if (assistantEl) assistantEl.remove();
     thinking.remove();
     if (err.name === "AbortError") {
       addBubble("assistant", "Génération annulée.", { muted: true });
