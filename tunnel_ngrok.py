@@ -13,21 +13,23 @@
 #   - Les checkpoints sont téléchargés depuis Hugging Face à la demande.
 #   - Le cache Hugging Face évite les téléchargements inutiles.
 #   - Le port peut être fourni par Render via PORT.
-#   - /api/chat et /api/chat/stream acceptent désormais soit la clé
-#     partagée du proxy Render (Authorization: Bearer OPSIOM_API_KEY), soit
-#     une clé API Octix personnelle (X-API-Key) -- dans ce second cas, le
-#     quota de tokens du compte est vérifié puis décompté auprès d'Octix
-#     (voir _authenticate / _quota_status / _consume_quota), le même
-#     compteur PARTAGÉ que celui affiché dans l'interface web.
+#   - /api/chat et /api/chat/stream s'authentifient désormais avec le token
+#     de compte de l'utilisateur (Authorization: Bearer <token>, obtenu via
+#     /login) -- le même, que l'appel vienne du proxy Render (avec l'en-tête
+#     X-Opsiom-Quota-Handled: 1, quota déjà décompté par le proxy) ou
+#     directement du CLI opsiom (quota vérifié puis décompté ici même,
+#     voir _authenticate / _quota_status / _consume_quota). Plus de secret
+#     séparé à synchroniser entre les deux services. Une ancienne clé API
+#     personnelle (X-API-Key) ou un ancien secret partagé (OPSIOM_API_KEY)
+#     restent acceptés par compatibilité, mais ne sont plus nécessaires.
 #   - /api/chat/stream existe pour le CLI opsiom (SSE "data: {...}\n\n") :
 #     la génération reste bloquante côté modèle, seul l'envoi au client est
 #     découpé mot par mot pour l'affichage progressif.
 #
 # Variables d'environnement supplémentaires :
 #   OCTIX_URL          - URL de l'API Octix (défaut: http://localhost:5050)
-#   OPSIOM_API_KEY      - secret partagé avec le proxy Render (optionnel ;
-#                         si absent, ce serveur reste ouvert sans clé, comme
-#                         avant l'ajout de ce système)
+#   OPSIOM_API_KEY      - ancien secret partagé, optionnel, gardé seulement
+#                         pour compatibilité (voir _authenticate)
 #   DAILY_TOKEN_QUOTA  - défaut: 500, doit matcher la valeur côté Octix
 #
 # Architecture :
@@ -87,18 +89,26 @@ TOKENIZER_FILENAME = "fr_bpe_tokenizer.json"
 
 
 # ============================================================================
-# Auth & quota — clé API personnelle (CLI) vs clé partagée (proxy Render)
+# Auth & quota — le compte suffit, plus de secret séparé à faire coïncider
+# entre deux services.
 #
-# Deux façons d'appeler ce serveur :
-#   1. Le frontend Opsiom (Render) : un secret UNIQUE et partagé côté serveur
-#      (OPSIOM_API_KEY), envoyé en "Authorization: Bearer ...". Ce chemin ne
-#      décompte PAS de quota ici : le frontend a déjà vérifié/décompté le
-#      quota du compte connecté auprès d'Octix avant d'appeler /api/chat.
-#   2. Le CLI opsiom, en direct : la clé API PERSONNELLE de l'utilisateur
-#      (Octix), envoyée en "X-API-Key". Ce chemin est vérifié auprès d'Octix
-#      (/verify-api-key) et décompte le quota de tokens du compte auprès
-#      d'Octix (/account/quota/consume) -- le MÊME quota, partagé avec le
-#      web, puisque décompté par compte et non par clé (voir Octix_API).
+# Façons d'appeler ce serveur, toutes identifiées par le MÊME token de
+# compte (Authorization: Bearer <token>, obtenu via /login) :
+#   1. Le proxy Render (frontend web) : il a déjà vérifié/décompté le quota
+#      du compte connecté auprès d'Octix avant d'appeler /api/chat, et le
+#      signale avec l'en-tête "X-Opsiom-Quota-Handled: 1" pour qu'on ne le
+#      décompte pas une seconde fois ici (mode "trusted_personal").
+#   2. Le CLI opsiom, en direct : même token de compte, mais sans cet
+#      en-tête -- le quota est alors vérifié ET décompté ici même, auprès
+#      d'Octix (/account/quota, /account/quota/consume). Le MÊME quota est
+#      donc partagé entre web et CLI, puisque décompté par compte.
+#
+# Compatibilité (facultative, plus mise en avant nulle part) :
+#   - une ancienne clé API personnelle en "X-API-Key" fonctionne encore
+#     (mode "api_key", vérifiée via /verify-api-key).
+#   - un ancien secret partagé OPSIOM_API_KEY, s'il est encore défini ici,
+#     continue d'être accepté en "Authorization: Bearer <secret>"
+#     (mode "trusted").
 # ============================================================================
 
 OCTIX_URL = os.environ.get("OCTIX_URL", "http://localhost:5050")
@@ -113,19 +123,20 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _authenticate(req):
-    """Résout l'appelant. Renvoie (mode, api_key_ou_none, error_ou_none) :
-      - mode == "trusted" : le proxy Render (clé partagée OPSIOM_API_KEY
-        correcte, ou aucune clé partagée configurée ici -- dev local).
-        Aucun quota décompté sur ce chemin (le proxy l'a déjà fait auprès
-        d'Octix pour le compte web concerné).
-      - mode == "api_key" : une clé API Octix personnelle valide -- le
-        quota du compte doit être vérifié puis décompté. `api_key_ou_none`
-        contient alors la clé elle-même (réutilisée telle quelle pour les
-        appels de quota à Octix, qui l'accepte directement).
+    """Résout l'appelant. Renvoie (mode, credential_ou_none, error_ou_none) :
+      - mode == "trusted_personal" : le proxy Render, avec le token de
+        compte de l'utilisateur ET l'en-tête X-Opsiom-Quota-Handled: 1 --
+        posé uniquement par ce proxy, une fois qu'il a déjà décompté le
+        quota lui-même auprès d'Octix. Jamais décompté une seconde fois ici.
+      - mode == "personal_token" : un appelant direct (le CLI) avec son
+        propre token de compte -- quota vérifié ET décompté ici.
+      - mode == "api_key" : compatibilité, ancienne clé API personnelle.
+      - mode == "trusted" : compatibilité, ancien secret partagé.
     error_ou_none contient un message si l'authentification a échoué."""
     auth_header = req.headers.get("Authorization", "")
     bearer = auth_header[7:].strip() if auth_header.startswith("Bearer ") else None
     api_key = req.headers.get("X-API-Key") or req.headers.get("X-Api-Key")
+    quota_already_handled = req.headers.get("X-Opsiom-Quota-Handled") == "1"
 
     if api_key:
         try:
@@ -137,42 +148,63 @@ def _authenticate(req):
             return None, None, "clé API invalide ou expirée."
         return "api_key", api_key, None
 
+    if bearer and OPSIOM_API_KEY and bearer == OPSIOM_API_KEY:
+        return "trusted", None, None
+
+    if bearer:
+        # Token de compte (identique à celui du web ou obtenu via
+        # `opsiom login`) : c'est le chemin normal désormais.
+        try:
+            r = requests.post(f"{OCTIX_URL}/verify", json={"token": bearer}, timeout=8)
+            data = r.json()
+        except (requests.exceptions.RequestException, ValueError):
+            return None, None, "service de comptes injoignable, réessaie plus tard."
+        if not data.get("valid"):
+            return None, None, "session expirée, reconnecte-toi."
+        return ("trusted_personal" if quota_already_handled else "personal_token"), bearer, None
+
     if OPSIOM_API_KEY:
-        if bearer == OPSIOM_API_KEY:
-            return "trusted", None, None
-        return None, None, "authentification requise (clé API personnelle ou clé partagée)."
+        return None, None, "authentification requise (connecte-toi avec ton compte)."
 
     # Aucune clé partagée configurée sur ce serveur (dev local / usage perso) :
     # on n'exige rien, comme avant l'ajout de ce système d'auth.
     return "trusted", None, None
 
 
-def _quota_status(api_key: str):
-    """Statut du quota Octix du compte propriétaire de `api_key`, sans le
-    décompter. Renvoie un quota "plein" si Octix est injoignable."""
+def _quota_headers(mode: str, credential: str) -> dict:
+    """En-tête d'authentification à renvoyer à Octix pour les appels de
+    quota, selon le mode résolu par _authenticate."""
+    if mode == "api_key":
+        return {"X-Api-Key": credential}
+    return {"Authorization": f"Bearer {credential}"}
+
+
+def _quota_status(mode: str, credential: str):
+    """Statut du quota Octix du compte appelant, sans le décompter. Renvoie
+    un quota "plein" si Octix est injoignable."""
     try:
-        r = requests.get(f"{OCTIX_URL}/account/quota", headers={"X-Api-Key": api_key}, timeout=5)
+        r = requests.get(f"{OCTIX_URL}/account/quota", headers=_quota_headers(mode, credential), timeout=5)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.RequestException:
         return {"used": 0, "limit": DAILY_TOKEN_QUOTA, "remaining": DAILY_TOKEN_QUOTA}
 
 
-def _consume_quota(api_key: str, tokens: int):
-    """Décompte `tokens` sur le quota Octix du compte propriétaire de
-    `api_key` et renvoie le nouveau statut. Ne bloque pas la réponse déjà
-    générée si Octix est injoignable à ce moment précis."""
+def _consume_quota(mode: str, credential: str, tokens: int):
+    """Décompte `tokens` sur le quota Octix du compte appelant et renvoie le
+    nouveau statut. Ne bloque pas la réponse déjà générée si Octix est
+    injoignable à ce moment précis."""
     try:
         r = requests.post(
             f"{OCTIX_URL}/account/quota/consume",
             json={"tokens": max(0, int(tokens))},
-            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            headers={**_quota_headers(mode, credential), "Content-Type": "application/json"},
             timeout=5,
         )
         data = r.json()
-        return data.get("quota") or _quota_status(api_key)
+        return data.get("quota") or _quota_status(mode, credential)
     except requests.exceptions.RequestException:
-        return _quota_status(api_key)
+        return _quota_status(mode, credential)
 
 
 MODEL_CATALOG = [
@@ -1384,12 +1416,13 @@ def _generate(model_id: str, message: str, data: dict) -> str:
 )
 def chat():
 
-    mode, api_key, auth_error = _authenticate(request)
+    mode, credential, auth_error = _authenticate(request)
     if auth_error:
         return jsonify({"error": auth_error}), 401
 
-    if mode == "api_key":
-        quota = _quota_status(api_key)
+    personal = mode in ("api_key", "personal_token")
+    if personal:
+        quota = _quota_status(mode, credential)
         if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
             return jsonify({
                 "error": f"quota quotidien de {quota.get('limit', DAILY_TOKEN_QUOTA)} tokens atteint.",
@@ -1405,10 +1438,10 @@ def chat():
         response_text = _generate(model_id, message, data)
 
         result = {"response": response_text, "model": model_id}
-        if mode == "api_key":
+        if personal:
             tokens_used = _estimate_tokens(message) + _estimate_tokens(response_text)
             result["tokens_used"] = tokens_used
-            result["remaining_quota"] = _consume_quota(api_key, tokens_used).get("remaining", 0)
+            result["remaining_quota"] = _consume_quota(mode, credential, tokens_used).get("remaining", 0)
 
         return jsonify(result)
 
@@ -1434,12 +1467,13 @@ def chat():
 )
 def chat_stream():
 
-    mode, api_key, auth_error = _authenticate(request)
+    mode, credential, auth_error = _authenticate(request)
     if auth_error:
         return jsonify({"error": auth_error}), 401
 
-    if mode == "api_key":
-        quota = _quota_status(api_key)
+    personal = mode in ("api_key", "personal_token")
+    if personal:
+        quota = _quota_status(mode, credential)
         if quota.get("remaining", DAILY_TOKEN_QUOTA) <= 0:
             return jsonify({
                 "error": f"quota quotidien de {quota.get('limit', DAILY_TOKEN_QUOTA)} tokens atteint.",
@@ -1465,10 +1499,10 @@ def chat_stream():
             time.sleep(0.015)  # rythme de lecture, purement cosmétique
 
         final_event = {"done": True, "model": model_id}
-        if mode == "api_key":
+        if personal:
             tokens_used = _estimate_tokens(message) + _estimate_tokens(response_text)
             final_event["tokens_used"] = tokens_used
-            final_event["remaining_quota"] = _consume_quota(api_key, tokens_used).get("remaining", 0)
+            final_event["remaining_quota"] = _consume_quota(mode, credential, tokens_used).get("remaining", 0)
         yield f"data: {json.dumps(final_event)}\n\n"
 
     return Response(stream_with_context(_events()), mimetype="text/event-stream")

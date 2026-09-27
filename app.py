@@ -19,7 +19,12 @@ Routes exposées au navigateur :
 Variables d'environnement :
   OPSIOM_API_URL     - URL du tunnel ngrok, avec ou sans le suffixe "/api"
                        (défaut: https://pursuable-underpaid-boss.ngrok-free.dev)
-  OPSIOM_API_KEY     - optionnel, si tu ajoutes une auth Bearer côté serveur
+  OPSIOM_API_KEY     - ancien secret partagé, gardé en repli seulement si
+                       jamais aucune session n'est disponible ; le chemin
+                       normal envoie désormais le token de compte de la
+                       personne connectée (voir _headers ci-dessous), plus
+                       besoin de faire coïncider un secret entre ce
+                       service et le serveur d'inférence.
   OPSIOM_TIMEOUT     - défaut: 120 (secondes). L'inférence CPU est lente,
                        surtout avec le modèle 220M.
   DAILY_TOKEN_QUOTA  - défaut: 500. Doit rester identique à la valeur
@@ -175,7 +180,21 @@ def _headers() -> dict:
         # d'avertissement HTML qui casserait resp.json().
         "ngrok-skip-browser-warning": "true",
     }
-    if OPSIOM_API_KEY:
+    token = session.get("octix_token")
+    if token:
+        # Même token de compte que pour Octix (voir _octix_auth_headers) :
+        # le serveur d'inférence le vérifie lui-même auprès d'Octix, plus
+        # besoin de secret séparé à synchroniser entre les deux services.
+        headers["Authorization"] = f"Bearer {token}"
+        # On a déjà vérifié/décompté le quota nous-mêmes juste avant/après
+        # cet appel (fetch_quota_status / consume_quota, ci-dessus) : ce
+        # drapeau évite que le serveur d'inférence le décompte une
+        # deuxième fois pour la même réponse.
+        headers["X-Opsiom-Quota-Handled"] = "1"
+    elif OPSIOM_API_KEY:
+        # Compatibilité avec l'ancien secret partagé, si encore configuré
+        # et qu'aucune session n'est disponible (ne devrait plus arriver
+        # derrière @login_required, mais gardé par prudence).
         headers["Authorization"] = f"Bearer {OPSIOM_API_KEY}"
     return headers
 
@@ -393,7 +412,7 @@ def chat():
             except ValueError:
                 return jsonify({"error": "Requête invalide."}), 400
         if status_code == 401:
-            return jsonify({"error": "Clé API Opsiom invalide ou manquante (OPSIOM_API_KEY)."}), 502
+            return jsonify({"error": "Session expirée ou invalide auprès du serveur Opsiom. Reconnecte-toi."}), 502
         if status_code == 413:
             return jsonify({"error": "Message rejeté par Opsiom (trop long côté API)."}), 413
         return jsonify({"error": f"Opsiom a renvoyé une erreur ({status_code})."}), 502
