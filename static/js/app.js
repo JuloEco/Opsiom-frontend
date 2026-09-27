@@ -557,7 +557,56 @@ async function refreshStatus() {
 }
 
 // ---------------------------------------------------------------------------
-// Envoi d'un message
+// Bulle en cours de streaming : créée dès le premier jeton reçu, remplace
+// l'animation « Opsiom réfléchit », et grandit au fil des jetons.
+// ---------------------------------------------------------------------------
+function addStreamingBubble() {
+  removePlaceholder();
+  const wasNearBottom = isNearBottom();
+
+  const el = document.createElement("div");
+  el.className = "bubble assistant streaming";
+  el.dataset.raw = "";
+
+  const content = document.createElement("div");
+  content.className = "msg-content";
+  el.appendChild(content);
+
+  conversation.appendChild(el);
+  if (wasNearBottom) conversation.scrollTop = conversation.scrollHeight;
+
+  return {
+    el,
+    append(chunk) {
+      el.dataset.raw += chunk;
+      content.innerHTML = renderMarkdown(el.dataset.raw);
+      if (isNearBottom()) conversation.scrollTop = conversation.scrollHeight;
+    },
+    finish(meta) {
+      el.classList.remove("streaming");
+      if (!el.dataset.raw) {
+        el.dataset.raw = "(réponse vide)";
+        content.textContent = el.dataset.raw;
+      }
+      if (meta) {
+        const metaEl = document.createElement("div");
+        metaEl.className = "bubble-meta";
+        metaEl.textContent = meta;
+        el.appendChild(metaEl);
+      }
+      el.appendChild(makeActionButton("copy"));
+    },
+    fail(message) {
+      el.classList.remove("streaming");
+      el.classList.add("error");
+      el.dataset.raw = message;
+      content.textContent = message;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Envoi d'un message (streaming via /chat/stream, Server-Sent Events)
 // ---------------------------------------------------------------------------
 async function sendMessage(text) {
   const message = text.trim();
@@ -579,38 +628,87 @@ async function sendMessage(text) {
   const thinking = addThinking();
   currentAbortController = new AbortController();
 
+  let stream = null;
+
   try {
-    const resp = await fetch("/chat", {
+    const resp = await fetch("/chat/stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify({ message, model: modelId, ...settingsSnapshot }),
       signal: currentAbortController.signal,
     });
 
-    let data;
-    try {
-      data = await resp.json();
-    } catch (parseErr) {
-      throw new Error("Réponse du serveur illisible.");
+    if (!resp.ok || !resp.body) {
+      let errMsg = `Erreur serveur (${resp.status})`;
+      try {
+        const data = await resp.json();
+        if (data.error) errMsg = data.error;
+        if (data.quota) updateQuota(data.quota);
+      } catch (parseErr) { /* pas de JSON exploitable, on garde le message générique */ }
+      throw new Error(errMsg);
     }
 
-    if (data.quota) updateQuota(data.quota);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalModel = modelId;
+    let finalQuota = null;
+    let streamError = null;
 
-    if (!resp.ok) {
-      throw new Error(data.error || `Erreur serveur (${resp.status})`);
+    outer:
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx;
+      while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+
+        const dataLine = rawEvent.split("\n").find((l) => l.startsWith("data: "));
+        if (!dataLine) continue;
+
+        let evt;
+        try { evt = JSON.parse(dataLine.slice(6)); } catch (parseErr) { continue; }
+
+        if (evt.error) {
+          streamError = evt.error;
+          if (evt.quota) finalQuota = evt.quota;
+          break outer;
+        }
+        if (typeof evt.token === "string" && evt.token) {
+          if (!stream) {
+            thinking.remove();
+            stream = addStreamingBubble();
+          }
+          stream.append(evt.token);
+        }
+        if (evt.done) {
+          finalModel = evt.model || finalModel;
+          if (evt.quota) finalQuota = evt.quota;
+        }
+      }
     }
 
-    const seconds = thinking.elapsedSeconds();
-    thinking.remove();
+    if (streamError) throw new Error(streamError);
+    if (finalQuota) updateQuota(finalQuota);
 
-    const used = getModelInfo(data.model || modelId);
-    addBubble("assistant", data.response || "(réponse vide)", {
-      meta: `${used.label} · ${used.params} · ${seconds} s`,
-    });
+    if (stream) {
+      const seconds = thinking.elapsedSeconds();
+      const used = getModelInfo(finalModel);
+      stream.finish(`${used.label} · ${used.params} · ${seconds} s`);
+    } else {
+      thinking.remove();
+      addBubble("assistant", "(réponse vide)", { muted: true });
+    }
 
   } catch (err) {
     thinking.remove();
-    if (err.name === "AbortError") {
+    const cancelled = err.name === "AbortError";
+    if (stream) {
+      stream.fail(cancelled ? "Génération annulée." : `Erreur : ${err.message}`);
+    } else if (cancelled) {
       addBubble("assistant", "Génération annulée.", { muted: true });
     } else {
       console.error("Erreur lors de l'envoi du message :", err);
