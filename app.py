@@ -23,12 +23,13 @@ Variables d'environnement :
   OPSIOM_TIMEOUT   - défaut: 120 (secondes). L'inférence CPU est lente,
                      surtout avec le modèle 220M.
 """
+import json
 import logging
 import os
 import time
 
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 from auth import auth_bp, current_user_record, current_username, login_required
 from models import db
@@ -346,6 +347,110 @@ def chat():
     except Exception as e:  # garde-fou générique
         logger.exception("Erreur inattendue en appelant /chat")
         return jsonify({"error": f"Erreur inattendue côté serveur : {e}"}), 500
+
+
+@app.post("/chat/stream")
+@login_required
+def chat_stream():
+    """Proxy vers POST {OPSIOM_API_URL}/chat/stream (Server-Sent Events).
+
+    Même validation et même quota que /chat, mais la réponse est relayée au
+    fil de l'eau : chaque évènement JSON reçu du serveur Opsiom
+    ({"token": "..."} ou {"done": true, "model": "..."}) est retransmis tel
+    quel au navigateur, sous forme d'évènement SSE.
+
+    Le quota n'est décompté qu'à la réception de l'évènement final "done"
+    (donc seulement si le flux est allé jusqu'au bout), et la réponse
+    "quota" à jour est ajoutée à cet évènement pour que le front puisse
+    mettre sa barre à jour sans appel supplémentaire."""
+    user = current_user_record()
+    if not user.can_send_message(FREE_DAILY_QUOTA):
+        quota = user.quota_status(FREE_DAILY_QUOTA)
+        message = f"Quota gratuit atteint ({quota['limit']} messages/jour). Réessaie demain."
+
+        def quota_exceeded():
+            yield f"data: {json.dumps({'error': message, 'quota': quota})}\n\n"
+
+        return Response(stream_with_context(quota_exceeded()), mimetype="text/event-stream")
+
+    payload = request.get_json(silent=True) or {}
+    message = (payload.get("message") or "").strip()
+
+    if not message:
+        return jsonify({"error": "Message vide."}), 400
+    if len(message) > MAX_MESSAGE_CHARS:
+        return jsonify({"error": f"Message trop long ({MAX_MESSAGE_CHARS} caractères max)."}), 413
+
+    model_id = payload.get("model") or DEFAULT_MODEL_ID
+    if not isinstance(model_id, str) or len(model_id) > 32:
+        return jsonify({"error": "Identifiant de modèle invalide."}), 400
+
+    body = {
+        "message": message,
+        "model": model_id,
+        "max_new_tokens": _clamp(payload.get("max_new_tokens", 200), 200, 1, MAX_NEW_TOKENS_LIMIT, int),
+        "temperature": _clamp(payload.get("temperature", 0.7), 0.7, 0.0, 2.0),
+        "top_k": _clamp(payload.get("top_k", 40), 40, 0, 200, int),
+        "top_p": _clamp(payload.get("top_p", 0.9), 0.9, 0.0, 1.0),
+        "repetition_penalty": _clamp(payload.get("repetition_penalty", 1.3), 1.3, 1.0, 2.0),
+    }
+
+    t0 = time.time()
+
+    def relay():
+        try:
+            resp = requests.post(
+                f"{OPSIOM_API_URL}/chat/stream",
+                json=body, headers=_headers(), timeout=REQUEST_TIMEOUT, stream=True,
+            )
+
+            ngrok_msg = _ngrok_error(resp)
+            if ngrok_msg:
+                yield f"data: {json.dumps({'error': ngrok_msg})}\n\n"
+                return
+
+            if resp.status_code != 200:
+                body_txt = resp.text[:300]
+                logger.error(f"Erreur HTTP {resp.status_code} d'Opsiom (stream) : {body_txt}")
+                try:
+                    err_msg = resp.json().get("error", f"Opsiom a renvoyé une erreur ({resp.status_code}).")
+                except ValueError:
+                    err_msg = f"Opsiom a renvoyé une erreur ({resp.status_code})."
+                yield f"data: {json.dumps({'error': err_msg})}\n\n"
+                return
+
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                try:
+                    evt = json.loads(line[len("data: "):])
+                except ValueError:
+                    continue
+
+                if evt.get("done"):
+                    logger.info(f"Stream Opsiom ({model_id}) terminé en {time.time() - t0:.1f}s")
+                    user.register_message_sent()
+                    evt["quota"] = user.quota_status(FREE_DAILY_QUOTA)
+
+                yield f"data: {json.dumps(evt)}\n\n"
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout après {REQUEST_TIMEOUT}s sur /chat/stream (modèle {model_id}).")
+            yield f"data: {json.dumps({'error': 'Opsiom met trop de temps à répondre (génération lente sur CPU). Essaie un modèle plus petit ou un message plus court.'})}\n\n"
+
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connexion impossible à Opsiom (stream) : {e}")
+            yield f"data: {json.dumps({'error': 'Impossible de joindre Opsiom. Le PC est peut-être éteint ou hors ligne.'})}\n\n"
+
+        except Exception as e:  # garde-fou générique
+            logger.exception("Erreur inattendue en streamant /chat/stream")
+            yield f"data: {json.dumps({'error': f'Erreur inattendue côté serveur : {e}'})}\n\n"
+
+    return Response(
+        stream_with_context(relay()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":
