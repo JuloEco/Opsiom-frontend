@@ -15,6 +15,19 @@ const quotaUsedEl = document.getElementById("quota-used");
 const quotaLimitEl = document.getElementById("quota-limit");
 const quotaBarFill = document.getElementById("quota-bar-fill");
 const quotaBanner = document.getElementById("quota-banner");
+const quotaBannerInfo = document.getElementById("quota-banner-info");
+
+const quotaModalOverlay = document.getElementById("quota-modal-overlay");
+const quotaModalClose = document.getElementById("quota-modal-close");
+const modalQuotaUsed = document.getElementById("modal-quota-used");
+const modalQuotaLimit = document.getElementById("modal-quota-limit");
+const modalQuotaRemaining = document.getElementById("modal-quota-remaining");
+const modalQuotaBarFill = document.getElementById("quota-modal-bar-fill");
+
+const sidebar = document.getElementById("sidebar");
+const sidebarBackdrop = document.getElementById("sidebar-backdrop");
+const sidebarOpenBtn = document.getElementById("sidebar-open");
+const sidebarCloseBtn = document.getElementById("sidebar-close");
 
 const settingsWrap = document.getElementById("settings-wrap");
 const settingsToggle = document.getElementById("settings-toggle");
@@ -136,7 +149,63 @@ function updateQuota(quota) {
   msgInput.disabled = exhausted;
   msgInput.placeholder = exhausted ? "Quota atteint pour aujourd'hui" : "Écrivez à Opsiom…";
   if (!isSending) sendBtn.disabled = exhausted;
+
+  // Garde les mêmes chiffres à jour dans la fenêtre pop-up, qu'elle soit
+  // ouverte ou non au moment de la mise à jour.
+  if (modalQuotaUsed) {
+    modalQuotaUsed.textContent = used;
+    modalQuotaLimit.textContent = limit;
+    modalQuotaRemaining.textContent = Math.max(0, remaining);
+    modalQuotaBarFill.style.width = `${pct}%`;
+    modalQuotaBarFill.classList.toggle("warn", remaining > 0 && remaining <= Math.max(1, Math.round(limit * 0.2)));
+    modalQuotaBarFill.classList.toggle("empty", remaining <= 0);
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Fenêtre pop-up d'explication du quota
+// ---------------------------------------------------------------------------
+function openQuotaModal() {
+  if (!quotaModalOverlay) return;
+  quotaModalOverlay.hidden = false;
+}
+function closeQuotaModal() {
+  if (!quotaModalOverlay) return;
+  quotaModalOverlay.hidden = true;
+}
+function quotaModalIsOpen() {
+  return quotaModalOverlay && !quotaModalOverlay.hidden;
+}
+
+if (quotaCard) quotaCard.addEventListener("click", openQuotaModal);
+if (quotaBannerInfo) quotaBannerInfo.addEventListener("click", openQuotaModal);
+if (quotaModalClose) quotaModalClose.addEventListener("click", closeQuotaModal);
+if (quotaModalOverlay) {
+  quotaModalOverlay.addEventListener("click", (e) => {
+    if (e.target === quotaModalOverlay) closeQuotaModal();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Menu latéral en tiroir (mobile)
+// ---------------------------------------------------------------------------
+function openSidebar() {
+  if (!sidebar) return;
+  sidebar.classList.add("is-open");
+  document.body.classList.add("sidebar-open");
+}
+function closeSidebar() {
+  if (!sidebar) return;
+  sidebar.classList.remove("is-open");
+  document.body.classList.remove("sidebar-open");
+}
+function sidebarIsOpen() {
+  return sidebar && sidebar.classList.contains("is-open");
+}
+
+if (sidebarOpenBtn) sidebarOpenBtn.addEventListener("click", openSidebar);
+if (sidebarCloseBtn) sidebarCloseBtn.addEventListener("click", closeSidebar);
+if (sidebarBackdrop) sidebarBackdrop.addEventListener("click", closeSidebar);
 
 // Affichage immédiat à partir des valeurs déjà rendues par Flask, avant même
 // le premier appel à /status — évite un flash "0/0" au chargement.
@@ -598,117 +667,36 @@ async function sendMessage(text) {
   const thinking = addThinking();
   currentAbortController = new AbortController();
 
-  // La bulle assistant n'est créée qu'à l'arrivée du premier token : avant
-  // ça, on garde l'indicateur "Opsiom réfléchit".
-  let assistantEl = null;
-  let assistantContent = null;
-  let accumulated = "";
-  let doneReceived = false;
-
-  const finalizeBubble = (metaText) => {
-    if (!assistantEl) return;
-    assistantEl.dataset.raw = accumulated;
-    let metaEl = assistantEl.querySelector(".bubble-meta");
-    if (!metaEl) {
-      metaEl = document.createElement("div");
-      metaEl.className = "bubble-meta";
-      assistantEl.appendChild(metaEl);
-    }
-    metaEl.textContent = metaText;
-    if (!assistantEl.querySelector(".copy-btn")) {
-      assistantEl.appendChild(makeActionButton("copy"));
-    }
-  };
-
-  const appendToken = (piece) => {
-    if (!piece) return;
-    if (!assistantEl) {
-      thinking.remove();
-      assistantEl = addBubble("assistant", "");
-      assistantContent = assistantEl.querySelector(".msg-content");
-    }
-    accumulated += piece;
-    assistantEl.dataset.raw = accumulated;
-    assistantContent.innerHTML = renderMarkdown(accumulated);
-    if (isNearBottom()) conversation.scrollTop = conversation.scrollHeight;
-  };
-
   try {
-    const resp = await fetch("/chat/stream", {
+    const resp = await fetch("/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, model: modelId, ...settingsSnapshot }),
       signal: currentAbortController.signal,
     });
 
-    const isStream = (resp.headers.get("content-type") || "").includes("text/event-stream");
+    let data;
+    try {
+      data = await resp.json();
+    } catch (parseErr) {
+      throw new Error("Réponse du serveur illisible.");
+    }
 
-    if (!isStream) {
-      // Le proxy répond en JSON classique quand ce n'est pas un flux :
-      // quota atteint, timeout, PC hors ligne, message invalide, etc.
-      let data;
-      try {
-        data = await resp.json();
-      } catch (parseErr) {
-        throw new Error("Réponse du serveur illisible.");
-      }
-      if (data.quota) updateQuota(data.quota);
+    if (data.quota) updateQuota(data.quota);
+
+    if (!resp.ok) {
       throw new Error(data.error || `Erreur serveur (${resp.status})`);
     }
 
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    const seconds = thinking.elapsedSeconds();
+    thinking.remove();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let sepIdx;
-      while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
-        const rawEvent = buffer.slice(0, sepIdx);
-        buffer = buffer.slice(sepIdx + 2);
-        if (!rawEvent.startsWith("data: ")) continue;
-
-        let event;
-        try {
-          event = JSON.parse(rawEvent.slice(6));
-        } catch (parseErr) {
-          continue;
-        }
-
-        if (event.token) {
-          appendToken(event.token);
-        } else if (event.done) {
-          doneReceived = true;
-          if (event.quota) updateQuota(event.quota);
-          const used = getModelInfo(event.model || modelId);
-          const seconds = thinking.elapsedSeconds();
-          if (!assistantEl) {
-            thinking.remove();
-            assistantEl = addBubble("assistant", "(réponse vide)");
-          }
-          finalizeBubble(`${used.label} · ${used.params} · ${seconds} s`);
-        }
-      }
-    }
-
-    if (!doneReceived) {
-      // Le flux s'est arrêté sans évènement "done" explicite (connexion
-      // coupée en route, par exemple) : on finalise quand même la bulle
-      // avec ce qui a été reçu, plutôt que de la laisser sans méta.
-      const used = getModelInfo(modelId);
-      const seconds = thinking.elapsedSeconds();
-      if (!assistantEl) {
-        thinking.remove();
-        assistantEl = addBubble("assistant", "(réponse vide)");
-      }
-      finalizeBubble(`${used.label} · ${used.params} · ${seconds} s`);
-    }
+    const used = getModelInfo(data.model || modelId);
+    addBubble("assistant", data.response || "(réponse vide)", {
+      meta: `${used.label} · ${used.params} · ${seconds} s`,
+    });
 
   } catch (err) {
-    if (assistantEl) assistantEl.remove();
     thinking.remove();
     if (err.name === "AbortError") {
       addBubble("assistant", "Génération annulée.", { muted: true });
@@ -756,8 +744,16 @@ msgInput.addEventListener("input", autoResize);
 // génération en cours.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (quotaModalIsOpen()) {
+    closeQuotaModal();
+    return;
+  }
   if (settingsAreOpen()) {
     closeSettings();
+    return;
+  }
+  if (sidebarIsOpen()) {
+    closeSidebar();
     return;
   }
   if (isSending && currentAbortController) currentAbortController.abort();
@@ -766,6 +762,7 @@ document.addEventListener("keydown", (e) => {
 newChatBtn.addEventListener("click", () => {
   conversation.innerHTML = "";
   restorePlaceholderIfEmpty();
+  closeSidebar();
 });
 
 suggestions.forEach((btn) => {
