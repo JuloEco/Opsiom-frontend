@@ -616,6 +616,25 @@ body::after {
 .msg-content strong { font-weight: 700; color: #fff; }
 .msg-content > *:last-child { margin-bottom: 0; }
 
+/* Curseur clignotant pendant le streaming de la réponse */
+.bubble.assistant.streaming .msg-content::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--ink-dim, currentColor);
+  animation: stream-caret .85s steps(1) infinite;
+}
+@keyframes stream-caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble.assistant.streaming .msg-content::after { animation: none; opacity: .6; }
+}
+
 /* Animation « Opsiom réfléchit » */
 .bubble.assistant.thinking {
   display: flex;
