@@ -203,6 +203,43 @@ body::after {
   background: var(--grad-brand);
 }
 
+/* ---- Forfait (plan Free/Plus/Pro) --------------------------------------- */
+
+#plan-card {
+  width: 100%;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-m);
+  padding: 10px 14px;
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--ink);
+  font-size: .82rem;
+  margin-bottom: 10px;
+  transition: border-color .2s;
+}
+#plan-card:hover { border-color: var(--violet); }
+
+#plan-badge { font-weight: 700; }
+
+#lab-badge {
+  background: rgba(168, 85, 247, .15);
+  color: var(--orchid);
+  border-radius: 99px;
+  padding: 2px 8px;
+  font-size: .72rem;
+  font-weight: 600;
+}
+
+#plan-next-hint {
+  margin-left: auto;
+  color: var(--ink-dim);
+  font-size: .75rem;
+}
+
 /* ---- Quota gratuit (tokens/jour, partagé avec le CLI) ------------------ */
 
 #quota-card {

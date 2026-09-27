@@ -1,0 +1,170 @@
+/* Page /progression — réutilise les tokens de couleur de style.css */
+
+#progression-shell {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+#progression-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+#progression-back {
+  color: var(--ink-dim);
+  text-decoration: none;
+  font-size: .9rem;
+}
+#progression-back:hover { color: var(--ink); }
+
+#progression-header h1 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 1.4rem;
+  margin: 0;
+  flex: 1;
+  text-align: center;
+}
+
+#progression-current-plan {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  padding: 6px 14px;
+  font-size: .85rem;
+  font-weight: 600;
+}
+
+#progression-lead {
+  color: var(--ink-dim);
+  text-align: center;
+  margin: 0 auto 32px;
+  max-width: 480px;
+  font-size: .92rem;
+}
+
+.plan-emoji { font-size: 1.1rem; }
+
+.plan-card {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  padding: 22px 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-glow);
+}
+
+.plan-card-unlocked {
+  border-color: var(--violet);
+}
+
+.plan-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.plan-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plan-card-title h2 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+
+.plan-card-progress-count {
+  font-size: .82rem;
+  color: var(--ink-dim);
+}
+
+.plan-card-bar-track {
+  height: 8px;
+  border-radius: 99px;
+  background: var(--line-soft);
+  overflow: hidden;
+  margin: 14px 0;
+}
+.plan-card-bar-fill {
+  height: 100%;
+  background: var(--grad-brand);
+  border-radius: 99px;
+  transition: width .4s ease;
+}
+
+.mission-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mission-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: .92rem;
+  color: var(--ink-dim);
+}
+.mission-list li.mission-done {
+  color: var(--ink);
+}
+.mission-check { width: 18px; text-align: center; }
+.mission-label { flex: 1; }
+.mission-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: .8rem;
+  color: var(--ink-faint);
+}
+
+.plan-card-reward {
+  margin-top: 14px;
+  font-size: .88rem;
+  color: var(--ink-dim);
+}
+.plan-card-reward strong { color: var(--ink); }
+
+.plan-card-banner {
+  margin-top: 14px;
+  background: rgba(69, 217, 154, .12);
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: var(--radius-m);
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: .9rem;
+  text-align: center;
+}
+
+.plan-card-lab {
+  border-style: dashed;
+}
+.plan-card-lab-desc {
+  color: var(--ink-dim);
+  font-size: .88rem;
+  margin: 10px 0 0;
+}
+
+#progression-refresh {
+  display: block;
+  margin: 24px auto 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: var(--radius-m);
+  padding: 12px 22px;
+  font-weight: 600;
+  font-size: .9rem;
+  cursor: pointer;
+}
+#progression-refresh:hover { border-color: var(--violet); }
+#progression-refresh:disabled { opacity: .6; cursor: default; }
