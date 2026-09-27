@@ -682,7 +682,7 @@ async function sendMessage(text) {
   let finalMeta = null;
 
   try {
-    const resp = await fetch("/chat", {
+      const resp = await fetch("/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify({ message, model: modelId, stream: true, ...settingsSnapshot }),
