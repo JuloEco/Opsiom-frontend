@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ma progression — Opsiom</title>
+<link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/progression.css') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div id="progression-shell">
+
+  <header id="progression-header">
+    <a id="progression-back" href="{{ url_for('index') }}">&larr; Retour au chat</a>
+    <h1>Ma progression</h1>
+    <div id="progression-current-plan">
+      <span class="plan-emoji">{{ current_plan.emoji }}</span>
+      <span>{{ current_plan.label }}</span>
+    </div>
+  </header>
+
+  <p id="progression-lead">
+    Débloque des forfaits gratuits en avançant dans l'écosystème Opsiom :
+    LearnCode, Classroom et Omnia Mind. Chaque mission remplie reste acquise.
+  </p>
+
+  {% for plan in plans_view %}
+  <section class="plan-card {{ 'plan-card-unlocked' if plan.unlocked else '' }}">
+    <div class="plan-card-head">
+      <div class="plan-card-title">
+        <span class="plan-emoji">{{ plan.config.emoji }}</span>
+        <h2>{{ 'Débloquer ' ~ plan.config.label if not plan.unlocked else plan.config.label ~ ' débloqué !' }}</h2>
+      </div>
+      <span class="plan-card-progress-count">{{ plan.done_count }} / {{ plan.total_count }} missions</span>
+    </div>
+
+    <div class="plan-card-bar-track">
+      <div class="plan-card-bar-fill" style="width: {{ ((plan.done_count / plan.total_count * 100) if plan.total_count else 0)|round(1) }}%;"></div>
+    </div>
+
+    <ul class="mission-list">
+      {% for m in plan.missions %}
+      <li class="{{ 'mission-done' if m.done else '' }}">
+        <span class="mission-check">{{ '✅' if m.done else '⬜' }}</span>
+        <span class="mission-label">{{ m.label }}</span>
+        <span class="mission-count">{{ m.current }}/{{ m.target }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+
+    <div class="plan-card-reward">
+      <strong>Récompense :</strong>
+      {{ "{:,}".format(plan.config.daily_tokens).replace(",", " ") }} tokens/jour
+      {% if plan.config.priority_inference %} · priorité d'inférence{% endif %}
+    </div>
+
+    {% if plan.unlocked %}
+    <div class="plan-card-banner">🎉 {{ plan.config.label }} débloqué !</div>
+    {% endif %}
+  </section>
+  {% endfor %}
+
+  <section class="plan-card plan-card-lab">
+    <div class="plan-card-head">
+      <div class="plan-card-title">
+        <span class="plan-emoji">{{ lab_emoji }}</span>
+        <h2>{{ lab_label }}</h2>
+      </div>
+      <span class="plan-card-progress-count">{{ 'Actif' if lab else 'Attribution manuelle' }}</span>
+    </div>
+    <p class="plan-card-lab-desc">{{ lab_description }}</p>
+  </section>
+
+  <button id="progression-refresh" type="button">Actualiser ma progression</button>
+
+</div>
+
+<script>
+document.getElementById("progression-refresh").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "Actualisation…";
+  try {
+    const r = await fetch("/api/progression?force=1");
+    if (r.ok) { window.location.reload(); return; }
+  } catch (err) {}
+  e.target.disabled = false;
+  e.target.textContent = "Actualiser ma progression";
+});
+</script>
+
+</body>
+</html>

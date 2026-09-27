@@ -44,6 +44,12 @@
       </div>
     </div>
 
+    <a id="plan-card" href="{{ url_for('progression_page') }}">
+      <span id="plan-badge">{{ plan.emoji }} {{ plan.label }}</span>
+      {% if lab %}<span id="lab-badge">🧪 Lab</span>{% endif %}
+      {% if next_plan %}<span id="plan-next-hint">Débloquer {{ next_plan.label }} →</span>{% endif %}
+    </a>
+
     <button id="quota-card" type="button" data-used="{{ quota.used }}" data-limit="{{ quota.limit }}" aria-haspopup="dialog">
       <div id="quota-row">
         <span id="quota-label">
