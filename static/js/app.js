@@ -765,6 +765,13 @@ async function sendMessage(text) {
     } else {
       console.error("Erreur lors de l'envoi du message :", err);
       addBubble("assistant", `Erreur : ${err.message}`, { error: true });
+      // Certaines erreurs (session expirée, tunnel injoignable…) surviennent
+      // avant que le serveur ait pu joindre le moindre "quota" à sa réponse
+      // JSON : sans ça, la sidebar reste figée sur son dernier état connu,
+      // même si le quota réel n'est pas épuisé. On la resynchronise donc
+      // systématiquement après une erreur, plutôt que de ne toucher au
+      // quota que sur les réponses réussies.
+      refreshStatus();
     }
   } finally {
     isSending = false;
