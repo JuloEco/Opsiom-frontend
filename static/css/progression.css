@@ -1,6 +1,10 @@
 /* Page /progression — réutilise les tokens de couleur de style.css */
 
 #progression-shell {
+  /* Indispensable : body::before/::after (fond + grain) sont en position:fixed
+     z-index:0 et recouvriraient sinon tout le contenu (page « vide »). */
+  position: relative;
+  z-index: 1;
   max-width: 720px;
   margin: 0 auto;
   padding: 40px 24px 80px;
