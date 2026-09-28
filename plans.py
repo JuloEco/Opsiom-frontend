@@ -24,7 +24,7 @@ PLANS = {
     "free": {
         "label": "Opsiom Free",
         "emoji": "🟢",
-        "daily_tokens": 200,
+        "daily_tokens": 2000,
         "models": ["nano", "small"],
         "context_messages": 6,       # nb de messages d'historique gardés en contexte
         "description": "Forfait de base, obtenu automatiquement.",
