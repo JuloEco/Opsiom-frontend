@@ -6,6 +6,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --timeout 120
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.11"
       - key: OPSIOM_API_URL
         value: https://juloeco-opsiom.hf.space/api
       - key: OPSIOM_API_KEY
@@ -17,4 +19,4 @@ services:
       - key: OCTIX_PORTAL_URL
         sync: false   # portail Octix (lien "Créer un compte")
       - key: DAILY_TOKEN_QUOTA
-        value: "500"  # doit matcher la valeur configurée côté Octix
+        value: "2000"  # doit matcher la valeur configurée côté Octix
