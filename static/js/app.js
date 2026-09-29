@@ -132,12 +132,37 @@ async function initModelPicker() {
 // Quota gratuit (tokens/jour, partagé avec le CLI côté Octix — voir app.py)
 // ---------------------------------------------------------------------------
 function updateQuota(quota) {
-  if (!quota || typeof quota.used !== "number" || typeof quota.limit !== "number") return;
+  if (!quota || typeof quota.used !== "number") return;
+
+  // Compte administrateur : aucune limite. On l'affiche clairement plutôt
+  // que "0/0", et on ne bloque jamais l'envoi de messages ni n'affiche le
+  // bandeau "quota épuisé" (c'était justement lui qui restait affiché en
+  // permanence pour ces comptes avant cette correction).
+  if (quota.unlimited) {
+    quotaUsedEl.textContent = "Illimité";
+    if (quotaLimitEl) quotaLimitEl.textContent = "";
+    quotaBarFill.style.width = "0%";
+    quotaBarFill.classList.remove("warn", "empty");
+    quotaBanner.hidden = true;
+    msgInput.disabled = false;
+    msgInput.placeholder = "Écrivez à Opsiom…";
+    if (!isSending) sendBtn.disabled = false;
+    if (modalQuotaUsed) {
+      modalQuotaUsed.textContent = "Illimité";
+      modalQuotaLimit.textContent = "—";
+      modalQuotaRemaining.textContent = "—";
+      modalQuotaBarFill.style.width = "0%";
+      modalQuotaBarFill.classList.remove("warn", "empty");
+    }
+    return;
+  }
+
+  if (typeof quota.limit !== "number") return;
   const { used, limit } = quota;
   const remaining = typeof quota.remaining === "number" ? quota.remaining : Math.max(0, limit - used);
 
   quotaUsedEl.textContent = used;
-  quotaLimitEl.textContent = limit;
+  if (quotaLimitEl) quotaLimitEl.textContent = limit;
 
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   quotaBarFill.style.width = `${pct}%`;
@@ -212,7 +237,8 @@ if (sidebarBackdrop) sidebarBackdrop.addEventListener("click", closeSidebar);
 if (quotaCard) {
   const used = Number(quotaCard.dataset.used || 0);
   const limit = Number(quotaCard.dataset.limit || 0);
-  updateQuota({ used, limit, remaining: Math.max(0, limit - used) });
+  const unlimited = quotaCard.dataset.unlimited === "1";
+  updateQuota({ used, limit, remaining: Math.max(0, limit - used), unlimited });
 }
 
 // ---------------------------------------------------------------------------
