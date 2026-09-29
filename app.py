@@ -17,6 +17,8 @@ Routes exposées au navigateur :
   GET  /status    -> proxy de GET  {API}/health
   GET  /models    -> proxy de GET  {API}/models   (pour construire le sélecteur)
   POST /chat      -> proxy de POST {API}/chat     (accepte "message" + "model")
+  GET  /promo     -> saisie d'un code de promo (tokens en plus / modèles, 24 h)
+  GET  /admin     -> espace administrateur (création des codes), compte "Jules" seulement
 
 Forfaits (voir plans.py) :
   Le quota de tokens/jour, les modèles autorisés et les missions à
@@ -40,14 +42,16 @@ Variables d'environnement :
                        service et le serveur d'inférence.
   OPSIOM_TIMEOUT     - défaut: 120 (secondes). L'inférence CPU est lente,
                        surtout avec le modèle 220M.
-  DAILY_TOKEN_QUOTA  - défaut: 500. Doit rester identique à la valeur
+  ADMIN_USERNAMES    - pseudos administrateurs, séparés par des virgules
+                       (défaut: Jules). Accès illimité + espace /admin.
+  DAILY_TOKEN_QUOTA  - défaut: 2000. Doit rester identique à la valeur
                        configurée côté Octix (DAILY_TOKEN_QUOTA) : cette
                        variable ne sert ici qu'à afficher un quota par
                        défaut cohérent si Octix est injoignable, le
                        décompte qui fait foi est toujours celui d'Octix.
 
 Quota de tokens :
-  Le quota gratuit (500 tokens/jour par défaut) n'est PLUS suivi dans une
+  Le quota gratuit (2000 tokens/jour par défaut) n'est PLUS suivi dans une
   base locale à ce front : il est délégué à Octix (voir /account/quota et
   /account/quota/consume côté Octix_API), le même service qui gère les
   comptes. C'est ce qui permet de PARTAGER un seul et même quota entre
@@ -68,6 +72,7 @@ from auth import OCTIX_PORTAL_URL, OCTIX_URL, auth_bp, current_username, login_r
 import plans
 from models import db, get_or_create_user
 from progression import refresh_user_progression
+from promo import promo_bp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -92,6 +97,11 @@ if not app.secret_key:
 # Déléguée à Octix, via une session Flask simple (même méthode que
 # LearnCode/Omnia) : voir auth.py pour login_required, octix_login, etc.
 app.register_blueprint(auth_bp)
+app.register_blueprint(promo_bp)   # /promo (codes de promo) et /admin (création des codes)
+
+# Le cookie de session n'est pas envoyé lors d'une requête déclenchée depuis un
+# autre site (protection de base contre le CSRF, en plus du jeton des formulaires).
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # --- Base locale : forfaits, quota par forfait, progression -------------
 # Octix ne connaît pas la notion de forfait (voir plans.py) : c'est donc ici,
@@ -116,7 +126,7 @@ def current_user():
 
 # Conservée uniquement comme valeur d'affichage par défaut si Octix est
 # injoignable pour le décompte "best-effort" décrit ci-dessus.
-DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "500"))
+DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "2000"))
 
 
 def _octix_auth_headers() -> dict:
@@ -193,14 +203,9 @@ REQUEST_TIMEOUT = int(os.environ.get("OPSIOM_TIMEOUT", "120"))
 # Modèle utilisé si le front n'en envoie aucun (le serveur a aussi son défaut).
 DEFAULT_MODEL_ID = "small"
 
-# Noms affichés dans le sélecteur. Les ids (nano / small / large) sont ceux du
-# serveur d'inférence et ne changent pas (le CLI et /api/chat continuent de
-# fonctionner) : seul l'affichage est renommé, ici, à un seul endroit.
-MODEL_DISPLAY = {
-    "nano": {"label": "Opsiom Micro", "params": "25M"},
-    "small": {"label": "Opsiom Nano", "params": "45M"},
-    "large": {"label": "Opsiom Large", "params": "200M"},
-}
+# Noms affichés dans le sélecteur : définis dans plans.py (MODEL_DISPLAY), car
+# les codes de promo doivent aussi pouvoir proposer ces modèles.
+MODEL_DISPLAY = plans.MODEL_DISPLAY
 
 # Bornes appliquées côté proxy : l'API ngrok est publique, on évite qu'un
 # client puisse demander des générations démesurées sur ton PC.
@@ -261,9 +266,12 @@ def _ngrok_error(resp) -> str | None:
 def index():
     user = current_user()
     progress = refresh_user_progression(user)
+    grants = user.active_grants()
     return render_template(
         "index.html",
         username=current_username(),
+        is_admin=user.is_admin,
+        promo_until=grants[0].expires_at if grants else None,
         quota=user.quota_status(),
         plan=plans.plan_config(user.plan),
         plan_id=user.plan,
@@ -335,7 +343,11 @@ def status():
 
         resp.raise_for_status()
         data = resp.json()
-        return jsonify({"online": True, "quota": fetch_quota_status(), **data})
+        # Quota LOCAL (forfait + codes de promo) : c'est lui qui autorise ou
+        # bloque /chat. Renvoyer ici celui d'Octix (autre compteur, autre
+        # limite) faisait afficher un quota faux — d'où un bandeau « quota
+        # épuisé » qui apparaissait alors qu'il restait des tokens.
+        return jsonify({**data, "online": True, "quota": current_user().quota_status()})
 
     except requests.exceptions.Timeout:
         logger.warning("Timeout sur /health — le PC est peut-être occupé par une génération.")
@@ -437,7 +449,7 @@ def chat():
     if not user.can_send_message():
         return jsonify({
             "error": f"Quota {plans.plan_config(user.plan)['label']} atteint ({quota['limit']} tokens/jour). "
-                     f"Réessaie demain, ou débloque un forfait supérieur (voir /progression).",
+                     f"Réessaie demain, débloque un forfait supérieur (voir /progression) ou utilise un code de promo.",
             "quota": quota,
         }), 429
 
@@ -550,7 +562,7 @@ def chat_stream():
     if not user.can_send_message():
         return jsonify({
             "error": f"Quota {plans.plan_config(user.plan)['label']} atteint ({quota['limit']} tokens/jour). "
-                     f"Réessaie demain, ou débloque un forfait supérieur (voir /progression).",
+                     f"Réessaie demain, débloque un forfait supérieur (voir /progression) ou utilise un code de promo.",
             "quota": quota,
         }), 429
 

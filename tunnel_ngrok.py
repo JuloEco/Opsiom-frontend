@@ -30,7 +30,7 @@
 #   OCTIX_URL          - URL de l'API Octix (défaut: http://localhost:5050)
 #   OPSIOM_API_KEY      - ancien secret partagé, optionnel, gardé seulement
 #                         pour compatibilité (voir _authenticate)
-#   DAILY_TOKEN_QUOTA  - défaut: 500, doit matcher la valeur côté Octix
+#   DAILY_TOKEN_QUOTA  - défaut: 2000, doit matcher la valeur côté Octix
 #
 # Architecture :
 #
@@ -113,7 +113,7 @@ TOKENIZER_FILENAME = "fr_bpe_tokenizer.json"
 
 OCTIX_URL = os.environ.get("OCTIX_URL", "http://localhost:5050")
 OPSIOM_API_KEY = os.environ.get("OPSIOM_API_KEY", "").strip()
-DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "500"))
+DAILY_TOKEN_QUOTA = int(os.environ.get("DAILY_TOKEN_QUOTA", "2000"))
 
 
 def _estimate_tokens(text: str) -> int:

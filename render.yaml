@@ -20,3 +20,5 @@ services:
         sync: false   # portail Octix (lien "Créer un compte")
       - key: DAILY_TOKEN_QUOTA
         value: "2000"  # doit matcher la valeur configurée côté Octix
+      - key: ADMIN_USERNAMES
+        value: "Jules"  # pseudos administrateurs (séparés par des virgules) — même valeur côté Octix

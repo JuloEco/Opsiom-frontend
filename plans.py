@@ -13,6 +13,35 @@ via Octix. Les missions ci-dessous sont donc calculées en lisant, en lecture
 seule, les données déjà existantes dans chacune de ces bases.
 """
 
+import os
+
+# ---------------------------------------------------------------------------
+# 0. Modèles & administrateurs
+# ---------------------------------------------------------------------------
+# Noms affichés dans le sélecteur. Les ids (nano / small / large) sont ceux du
+# serveur d'inférence et ne changent pas : seul l'affichage est renommé, ici,
+# à un seul endroit. Sert aussi à lister les modèles proposables dans un code
+# de promo (voir promo.py).
+MODEL_DISPLAY = {
+    "nano": {"label": "Opsiom Micro", "params": "25M"},
+    "small": {"label": "Opsiom Nano", "params": "45M"},
+    "large": {"label": "Opsiom Large", "params": "200M"},
+}
+
+# Comptes administrateurs : accès illimité aux modèles et aux tokens, et accès
+# à l'espace /admin (création de codes de promo). Comparaison EXACTE avec le
+# pseudo Octix (sensible à la casse : "jules" et "Jules" seraient deux comptes
+# différents). Surchargeable sans redéployer le code via la variable
+# d'environnement ADMIN_USERNAMES (pseudos séparés par des virgules).
+ADMIN_USERNAMES = {
+    name.strip()
+    for name in os.environ.get("ADMIN_USERNAMES", "Jules").split(",")
+    if name.strip()
+}
+
+# Valeur "restant" renvoyée pour un compte sans limite (le front affiche ∞).
+UNLIMITED_REMAINING = 10**9
+
 # ---------------------------------------------------------------------------
 # 1. Forfaits — quotas & fonctionnalités
 # ---------------------------------------------------------------------------
@@ -86,14 +115,24 @@ MISSIONS = {
             "stat": "learncode.lessons_completed",
             "target": 3,
         },
-        
+        {
+            "key": "classroom_1_activite",
+            "label": "Réussir une activité Classroom",
+            "stat": "classroom.activities_passed",
+            "target": 1,
+        },
         {
             "key": "omniamind_1_defi",
             "label": "Réussir un défi Omnia Mind",
             "stat": "omniamind.challenges_passed",
             "target": 1,
         },
-        
+        {
+            "key": "opsiom_3_jours",
+            "label": "Utiliser Opsiom 3 jours différents",
+            "stat": "opsiom.active_days",
+            "target": 3,
+        },
     ],
     "pro": [
         {
