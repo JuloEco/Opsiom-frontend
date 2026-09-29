@@ -295,17 +295,27 @@ body::after {
 
 /* ---- Pub CLI ------------------------------------------------------------ */
 
+/* ---- Sections repliables de la sidebar (CLI, codes de promo, admin) ---- */
+/* Repliées par défaut : garde tout le contenu (rien n'est supprimé) tout en
+   désencombrant la sidebar au premier coup d'œil. */
+
+.sidebar-details,
 #cli-promo {
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-m);
   padding: 12px 14px;
   background: var(--panel);
+}
+.sidebar-details[open],
+#cli-promo[open] {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-
-#cli-promo-head {
+.sidebar-details summary,
+.cli-promo-head {
+  list-style: none;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -313,9 +323,32 @@ body::after {
   font-weight: 500;
   color: var(--ink);
 }
-#cli-promo-head svg { flex-shrink: 0; color: var(--orchid); }
+.sidebar-details summary::-webkit-details-marker { display: none; }
+.sidebar-details summary::after {
+  content: "";
+  width: 6px; height: 6px;
+  margin-left: auto;
+  border-right: 1.4px solid var(--ink-faint);
+  border-bottom: 1.4px solid var(--ink-faint);
+  transform: rotate(-45deg);
+  transition: transform .15s ease;
+  flex-shrink: 0;
+}
+.sidebar-details[open] summary::after { transform: rotate(45deg); }
+.sidebar-details > *:not(summary) { margin-top: 8px; }
+.sidebar-details summary:first-of-type { margin: 0; }
 
-#cli-promo-text {
+.cli-promo-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.cli-promo-head svg { flex-shrink: 0; color: var(--orchid); }
+
+.cli-promo-text {
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--ink-dim);
@@ -358,13 +391,13 @@ body::after {
 .cli-copy-btn:hover { color: var(--ink); background: rgba(255, 255, 255, .06); }
 .cli-copy-btn.copied { color: var(--green); }
 
-#cli-promo-link {
+.cli-promo-link {
   align-self: flex-start;
   font-size: 11.5px;
   color: var(--orchid);
   text-decoration: none;
 }
-#cli-promo-link:hover { text-decoration: underline; }
+.cli-promo-link:hover { text-decoration: underline; }
 
 #account-row {
   margin-top: auto;
