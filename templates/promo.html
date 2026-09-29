@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codes de promo — Opsiom</title>
+<link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/progression.css') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div id="progression-shell">
+
+  <header id="progression-header">
+    <a id="progression-back" href="{{ url_for('index') }}">&larr; Retour au chat</a>
+    <h1>Codes de promo</h1>
+    {% if is_admin %}<a id="progression-back" href="{{ url_for('promo.admin_page') }}">Espace admin →</a>{% else %}<span></span>{% endif %}
+  </header>
+
+  <p id="progression-lead">
+    Un code de promo donne des tokens en plus et/ou l'accès à des modèles
+    supplémentaires, pour une durée limitée (généralement 24 h).
+  </p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flash-list">
+        {% for category, message in messages %}
+          <li class="flash {{ category }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <section class="plan-card">
+    <div class="plan-card-head">
+      <div class="plan-card-title"><h2>Utiliser un code</h2></div>
+    </div>
+    <form method="POST" action="{{ url_for('promo.promo_redeem') }}" class="promo-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="text" name="code" placeholder="OPSI-XXXX-XXXX" maxlength="40" autocomplete="off" autocapitalize="characters" required autofocus>
+      <button type="submit">Activer</button>
+    </form>
+  </section>
+
+  <section class="plan-card">
+    <div class="plan-card-head">
+      <div class="plan-card-title"><h2>Codes actifs sur ton compte</h2></div>
+    </div>
+    {% if grants %}
+    <ul class="mission-list">
+      {% for g in grants %}
+      <li>
+        <span class="mission-check">🎁</span>
+        <span class="mission-label">{{ g.summary }}</span>
+        <span class="mission-count">jusqu'au {{ paris_time(g.expires_at) }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="plan-card-lab-desc">Aucun code actif pour le moment.</p>
+    {% endif %}
+  </section>
+
+</div>
+
+</body>
+</html>

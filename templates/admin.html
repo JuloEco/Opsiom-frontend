@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Administration — Opsiom</title>
+<link rel="icon" href="{{ url_for('static', filename='img/logo.png') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/progression.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div id="progression-shell" class="admin-shell">
+
+  <header id="progression-header">
+    <a id="progression-back" href="{{ url_for('index') }}">&larr; Retour au chat</a>
+    <h1>Administration</h1>
+    <a id="progression-back" href="{{ url_for('promo.promo_page') }}">Codes de promo →</a>
+  </header>
+
+  <p id="progression-lead">
+    Compte administrateur : <strong>{{ username }}</strong> — accès illimité aux
+    modèles et aux tokens. Autres administrateurs : {{ admin_names|join(", ") }}.
+  </p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <ul class="flash-list">
+        {% for category, message in messages %}
+          <li class="flash {{ category }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+
+  <section class="plan-card">
+    <div class="plan-card-head">
+      <div class="plan-card-title"><h2>Créer un code de promo</h2></div>
+    </div>
+
+    <form method="POST" action="{{ url_for('promo.admin_create_code') }}" class="admin-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="admin-form-row">
+        <label for="bonus_tokens">Tokens en plus / jour</label>
+        <input type="text" id="bonus_tokens" name="bonus_tokens" placeholder="ex. 20000" inputmode="numeric">
+      </div>
+
+      <div class="admin-form-row">
+        <span class="admin-form-label">Modèles débloqués</span>
+        <div class="admin-checkbox-group">
+          {% for model_id, info in model_choices.items() %}
+          <label class="admin-checkbox">
+            <input type="checkbox" name="models" value="{{ model_id }}">
+            {{ info.label }} <small>{{ info.params }}</small>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="admin-form-row">
+        <label for="duration_hours">Durée de l'avantage (heures)</label>
+        <input type="text" id="duration_hours" name="duration_hours" value="{{ default_duration }}" inputmode="numeric">
+      </div>
+
+      <div class="admin-form-row">
+        <label for="max_uses">Nombre maximal d'utilisations</label>
+        <input type="text" id="max_uses" name="max_uses" placeholder="illimité si vide" inputmode="numeric">
+      </div>
+
+      <div class="admin-form-row">
+        <label for="valid_until">Le code cesse d'être utilisable après le</label>
+        <input type="date" id="valid_until" name="valid_until">
+      </div>
+
+      <div class="admin-form-row">
+        <label for="code">Code personnalisé (facultatif)</label>
+        <input type="text" id="code" name="code" placeholder="généré automatiquement si vide" maxlength="40" autocapitalize="characters">
+      </div>
+
+      <div class="admin-form-row">
+        <label for="note">Note interne (facultatif)</label>
+        <input type="text" id="note" name="note" placeholder="ex. Discord — event rentrée" maxlength="120">
+      </div>
+
+      <button type="submit" class="admin-submit">Créer le code</button>
+    </form>
+  </section>
+
+  <section class="plan-card">
+    <div class="plan-card-head">
+      <div class="plan-card-title"><h2>Codes existants</h2></div>
+      <span class="plan-card-progress-count">{{ codes|length }} code{{ 's' if codes|length != 1 else '' }}</span>
+    </div>
+
+    {% if codes %}
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Avantage</th>
+            <th>Utilisations</th>
+            <th>Statut</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in codes %}
+          <tr class="{{ 'row-inactive' if not c.obj.active else '' }}">
+            <td>
+              <code>{{ c.obj.code }}</code>
+              {% if c.obj.note %}<div class="admin-note">{{ c.obj.note }}</div>{% endif %}
+            </td>
+            <td>
+              {{ c.summary }}
+              <div class="admin-note">{{ c.obj.duration_hours }} h par utilisation{% if c.obj.valid_until %} · utilisable jusqu'au {{ paris_time(c.obj.valid_until) }}{% endif %}</div>
+            </td>
+            <td>{{ c.uses }}{% if c.obj.max_uses %} / {{ c.obj.max_uses }}{% endif %}
+              {% if c.active_uses %}<div class="admin-note">{{ c.active_uses }} en cours</div>{% endif %}
+            </td>
+            <td>
+              {% if c.error %}<span class="admin-badge admin-badge-off">{{ c.error }}</span>
+              {% else %}<span class="admin-badge admin-badge-on">Disponible</span>{% endif %}
+            </td>
+            <td class="admin-actions">
+              <form method="POST" action="{{ url_for('promo.admin_toggle_code', code_id=c.obj.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="admin-link-btn">{{ 'Désactiver' if c.obj.active else 'Réactiver' }}</button>
+              </form>
+              <form method="POST" action="{{ url_for('promo.admin_delete_code', code_id=c.obj.id) }}" onsubmit="return confirm('Supprimer ce code et les avantages déjà accordés avec ?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="admin-link-btn admin-link-btn-danger">Supprimer</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="plan-card-lab-desc">Aucun code créé pour le moment.</p>
+    {% endif %}
+  </section>
+
+</div>
+
+</body>
+</html>

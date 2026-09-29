@@ -46,29 +46,30 @@
 
     <a id="plan-card" href="{{ url_for('progression_page') }}">
       <span id="plan-badge">{{ plan.emoji }} {{ plan.label }}</span>
-      {% if lab %}<span id="lab-badge">🧪 Lab</span>{% endif %}
-      {% if next_plan %}<span id="plan-next-hint">Débloquer {{ next_plan.label }} →</span>{% endif %}
+      {% if is_admin %}<span id="lab-badge">👑 Admin</span>{% elif lab %}<span id="lab-badge">🧪 Lab</span>{% endif %}
+      {% if promo_until %}<span id="lab-badge">🎁 Promo</span>{% endif %}
+      {% if next_plan and not is_admin %}<span id="plan-next-hint">Débloquer {{ next_plan.label }} →</span>{% endif %}
     </a>
 
-    <button id="quota-card" type="button" data-used="{{ quota.used }}" data-limit="{{ quota.limit }}" aria-haspopup="dialog">
+    <button id="quota-card" type="button" data-used="{{ quota.used }}" data-limit="{{ quota.limit }}" data-unlimited="{{ '1' if is_admin else '0' }}" aria-haspopup="dialog">
       <div id="quota-row">
         <span id="quota-label">
           Tokens aujourd'hui
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.1"/><path d="M6 5.4V9M6 3.6V3.55" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
         </span>
-        <span id="quota-count"><span id="quota-used">{{ quota.used }}</span>/<span id="quota-limit">{{ quota.limit }}</span></span>
+        <span id="quota-count">{% if is_admin %}<span id="quota-used">Illimité</span>{% else %}<span id="quota-used">{{ quota.used }}</span>/<span id="quota-limit">{{ quota.limit }}</span>{% endif %}</span>
       </div>
       <div id="quota-bar-track">
-        <div id="quota-bar-fill" style="width: {{ ((quota.used / quota.limit * 100) if quota.limit else 0)|round(1) }}%;"></div>
+        <div id="quota-bar-fill" style="width: {{ 0 if is_admin else ((quota.used / quota.limit * 100) if quota.limit else 0)|round(1) }}%;"></div>
       </div>
     </button>
 
-    <div id="cli-promo">
-      <div id="cli-promo-head">
+    <details id="cli-promo" class="sidebar-details">
+      <summary class="cli-promo-head">
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 3.2h9M2 6.5h9M2 9.8h5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
         <span>Opsiom en ligne de commande</span>
-      </div>
-      <p id="cli-promo-text">Même compte, même quota de tokens — discutez avec Opsiom sans quitter le terminal.</p>
+      </summary>
+      <p class="cli-promo-text">Même compte, même quota de tokens — discutez avec Opsiom sans quitter le terminal.</p>
       <div class="cli-promo-code" data-copy="pip install opsiom-cli">
         <code>pip install opsiom-cli</code>
         <button type="button" class="cli-copy-btn" aria-label="Copier">⧉</button>
@@ -77,8 +78,28 @@
         <code>opsiom --api-key <em>VOTRE_CLE_API</em></code>
         <button type="button" class="cli-copy-btn" aria-label="Copier">⧉</button>
       </div>
-      <a id="cli-promo-link" href="{{ octix_portal_url or '#' }}/compte" target="_blank" rel="noopener">Récupérer ma clé API →</a>
-    </div>
+      <a class="cli-promo-link" href="{{ octix_portal_url or '#' }}/compte" target="_blank" rel="noopener">Récupérer ma clé API →</a>
+    </details>
+
+    <details id="extras-promo" class="sidebar-details">
+      <summary>
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1.5L7.7 4.9L11 6.5L7.7 8.1L6.5 11.5L5.3 8.1L2 6.5L5.3 4.9L6.5 1.5Z" stroke="currentColor" stroke-width="1"/></svg>
+        <span>Codes de promo{% if promo_until %} · actif{% endif %}</span>
+      </summary>
+      <p class="cli-promo-text">Un code donne des tokens en plus et/ou des modèles supplémentaires, pour une durée limitée.</p>
+      <a class="cli-promo-link" href="{{ url_for('promo.promo_page') }}">Gérer mes codes →</a>
+    </details>
+
+    {% if is_admin %}
+    <details id="extras-admin" class="sidebar-details">
+      <summary>
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M2 10.5L3.3 4.5L6.5 7L9.7 4.5L11 10.5H2Z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/></svg>
+        <span>Administration</span>
+      </summary>
+      <p class="cli-promo-text">Accès illimité activé sur ce compte. Crée des codes de promo pour les autres comptes.</p>
+      <a class="cli-promo-link" href="{{ url_for('promo.admin_page') }}">Ouvrir l'espace admin →</a>
+    </details>
+    {% endif %}
 
     <div id="account-row">
       <div class="avatar-chip">{{ (username or "?")[0]|upper }}</div>
