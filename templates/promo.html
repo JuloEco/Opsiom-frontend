@@ -42,7 +42,7 @@
     <form method="POST" action="{{ url_for('promo.promo_redeem') }}" class="promo-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="text" name="code" placeholder="OPSI-XXXX-XXXX" maxlength="40" autocomplete="off" autocapitalize="characters" required autofocus>
-      <button type="submit">Activer</button>
+      <button type="submit" id="send-btn">Activer</button>
     </form>
   </section>
 
